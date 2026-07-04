@@ -1,0 +1,13 @@
+# Normalize line endings. Force LF on shell/python/yaml so the CI build scripts
+# run correctly on the Linux and macOS runners (CRLF would break bash heredocs).
+* text=auto
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.iss  text eol=lf
+*.png  binary
+*.ico  binary
+*.icns binary
+*.ttf  binary
+*.otf  binary

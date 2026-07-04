@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# PyInstaller / build output
+build/
+dist/
+out/
+*.spec
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# App runtime data — NEVER commit private keys / config
+.pgp_messenger/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
