@@ -367,7 +367,31 @@ class Card:
 
     @staticmethod
     def gpg():
-        return shutil.which("gpg") or shutil.which("gpg2")
+        found = shutil.which("gpg") or shutil.which("gpg2")
+        if found or not IS_WIN:
+            return found
+        # PATH can be stale right after GnuPG was installed (e.g. PGPM started by its
+        # installer) — fall back to GnuPG's registered install dir / default locations
+        dirs = []
+        try:
+            import winreg
+            for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+                try:
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\GnuPG", 0,
+                                        winreg.KEY_READ | view) as k:
+                        dirs.append(winreg.QueryValueEx(k, "Install Directory")[0])
+                except OSError:
+                    pass
+        except ImportError:
+            pass
+        for env in ("ProgramFiles", "ProgramFiles(x86)"):
+            if os.environ.get(env):
+                dirs.append(os.path.join(os.environ[env], "GnuPG"))
+        for d in dirs:
+            exe = os.path.join(d, "bin", "gpg.exe")
+            if os.path.isfile(exe):
+                return exe
+        return None
 
     @staticmethod
     def available():
@@ -426,6 +450,20 @@ class Card:
                     info[key] = val
                     break
         return info
+
+    @staticmethod
+    def primary_fpr(fpr):
+        """Primary-key fingerprint of the secret key that owns `fpr` (a subkey — e.g. the
+        card's encryption key — or the primary itself). Falls back to `fpr`."""
+        try:
+            r = Card._run(["--with-colons", "--list-secret-keys", fpr])
+        except Exception:
+            return fpr
+        for line in (r.stdout or "").splitlines():
+            f = line.split(":")
+            if f[0] == "fpr" and len(f) > 9 and f[9]:
+                return f[9]                    # first fpr record = the primary key's
+        return fpr
 
     @staticmethod
     def export_pubkey(fpr):
@@ -804,10 +842,10 @@ BTN_H = 34
 RAD_W = 16    # corner radius for inputs / search pill (near-pill)
 RAD_BTN = 8   # corner radius for buttons (a little less curved than inputs)
 RAD_WIN = 24  # corner diameter for the app window (≈12px radius, Win11-like)
-APP_W = 860
+APP_W = 920
 APP_H = 540
 
-APP_VERSION = "0.5.6"
+APP_VERSION = "0.5.7"
 GITHUB_REPO = "PGPM-OPENSOURCE/OPENSOURCE-PGP-MESSANGER"
 
 def _make_btn(parent, text, command, w=150, pbg=None, bold=False):
@@ -1629,6 +1667,7 @@ class App(tk.Tk):
         self._search_filter = ""
         self._view = None                 # id of the panel currently shown (no-reload guard)
         self._card_present = None         # last known keycard presence (None = not yet probed)
+        self._card_in_use = False         # user clicked "use this card" (reset on unplug)
         self._migrate_legacy()
         self._reload_keys()
 
@@ -1893,8 +1932,8 @@ class App(tk.Tk):
         self._body = body = tk.Frame(root, bg=BK)
         body.pack(fill="both", expand=True)
 
-        # Sidebar (260px)
-        self._sb_frame = tk.Frame(body, bg=SBG, width=260)
+        # Sidebar (220px)
+        self._sb_frame = tk.Frame(body, bg=SBG, width=220)
         self._sb_frame.pack(side="left", fill="y")
         self._sb_frame.pack_propagate(False)
 
@@ -2054,6 +2093,8 @@ class App(tk.Tk):
             stc, stt = RD, "● GnuPG not found — install Gpg4win for key storage"
         elif self._secret:
             stc, stt = GN, f"● {len(self._secret)} of your keys in the GnuPG keyring"
+        elif getattr(self, "_card_present", None) is True:
+            stc, stt = T2, "● Keycard detected"
         else:
             stc, stt = RD, "● no private keys yet — generate or import one below"
         tk.Label(st_row, text=stt, font=(UI, 9, "bold"),
@@ -2392,10 +2433,11 @@ class App(tk.Tk):
         secret = Card.list_secret() if avail else []
         contacts = Card.list_public() if avail else []
         # A keycard leaves a "stub" secret key in the keyring even after it is
-        # unplugged. Hide the on-card keys (and their matching public entries) UNLESS a
-        # card is confirmed present, so a keycard only shows while it is plugged in.
-        # (None = not yet probed → hide until the watcher confirms a card is present.)
-        if getattr(self, "_card_present", None) is not True:
+        # unplugged. Hide the on-card keys (and their matching public entries) UNLESS the
+        # card is plugged in AND the user clicked "use this card" — inserting a card never
+        # puts its key in the app by itself. (Unplugging resets the choice.)
+        if not (getattr(self, "_card_present", None) is True
+                and getattr(self, "_card_in_use", False)):
             gone = {k["fpr"] for k in secret if k.get("on_card")}
             if gone:
                 secret = [k for k in secret if not k.get("on_card")]
@@ -2416,13 +2458,18 @@ class App(tk.Tk):
              f"contacts={len(contacts)} card_present={getattr(self,'_card_present',None)}")
         sfprs = {k["fpr"] for k in self._secret}
         if self.my_fpr not in sfprs:
-            self.my_fpr = self._secret[0]["fpr"] if self._secret else None
+            # never put a keycard key in use on its own (not on plug-in, not at startup):
+            # detecting a card only shows its key — it becomes active when the user picks
+            # it (click the key card / "use this card")
+            soft = [k["fpr"] for k in self._secret if not k.get("on_card")]
+            self.my_fpr = soft[0] if soft else None
             self._save_config()
 
     def _save_config(self):
         cfg = _load(_CONFIG, {})
         cfg["my_fpr"] = self.my_fpr
         _save(_CONFIG, cfg)
+        _log(f"active key -> {self.my_fpr}")
 
     def _cfg_get(self, key, default=None):
         return _load(_CONFIG, {}).get(key, default)
@@ -2491,6 +2538,22 @@ class App(tk.Tk):
     def _has_key(self):
         return bool(self.my_fpr)
 
+    def _card_waiting(self):
+        """A keycard is plugged in but the user hasn't clicked "use this card" yet."""
+        return getattr(self, "_card_present", None) is True and not self._card_in_use
+
+    def _no_key_warning(self, action):
+        """Explain why there's no active key and what to click, instead of acting."""
+        if self._card_waiting():
+            msg = ("Your keycard isn't in use.\n\n"
+                   f"Open the keycard panel and click USE THIS CARD to {action}.")
+        else:
+            msg = f"You have no active key.\n\nPick or create one in Profile & Keys to {action}."
+        messagebox.showwarning("No active key", msg, parent=self)
+
+    def _open_key_setup(self):
+        (self._open_card if self._card_waiting() else self._open_info)()
+
     # ── sign / decrypt (all via gpg; PIN/passphrase via gpg pinentry) ─
     def _sign(self, text):
         return Card.sign(text, self.my_fpr)
@@ -2534,6 +2597,8 @@ class App(tk.Tk):
             return
         if holder["present"] != getattr(self, "_card_present", None):
             self._card_present = holder["present"]
+            if not self._card_present:
+                self._card_in_use = False    # unplugged: the next insert needs "use this card"
             self._reload_keys()
             self._on_keys_changed()
         self._card_watch_job = self.after(2500, self._card_watch)
@@ -2625,8 +2690,10 @@ class App(tk.Tk):
                         "GnuPG doesn't have this card's public key.\n"
                         "Set a key URL on the card and Fetch, or import the matching .asc.",
                         parent=self); return
+                # the card reports its (sub)key fprs; the app tracks keys by primary fpr
+                self._card_present = True; self._card_in_use = True
                 self._reload_keys()
-                self.my_fpr = fpr; self._save_config(); self._rebuild_list()
+                self.my_fpr = Card.primary_fpr(fpr); self._save_config(); self._rebuild_list()
                 messagebox.showinfo("Keycard active",
                     "This card's key is now your active signing/decryption key.", parent=self)
                 self._open_card()
@@ -2849,9 +2916,8 @@ class App(tk.Tk):
 
         def do_sign():
             if not self._has_key():
-                messagebox.showwarning("No Keys",
-                    "You have no secret key. Generate or import one first.", parent=self)
-                return self._open_info()
+                self._no_key_warning("sign")
+                return self._open_key_setup()
             t = body()
             if not t.strip():
                 return
@@ -2869,6 +2935,8 @@ class App(tk.Tk):
             if not fpr:
                 return messagebox.showwarning("No Recipient",
                     "Pick a recipient (import a key first).", parent=self)
+            if not self._has_key():                      # no key → no readable copy for you
+                return self._no_key_warning("encrypt (so you can read your own messages)")
             recips = [fpr]
             if self.my_fpr and self.my_fpr not in recips:
                 recips.append(self.my_fpr)               # also encrypt to me
@@ -2925,9 +2993,8 @@ class App(tk.Tk):
                 return messagebox.showerror("Not PGP",
                     "Paste a PGP encrypted or signed message.", parent=self)
             if "BEGIN PGP MESSAGE" in raw and not self._has_key():
-                messagebox.showwarning("No Keys",
-                    "You have no secret key to decrypt with.", parent=self)
-                return self._open_info()
+                self._no_key_warning("decrypt")
+                return self._open_key_setup()
             try:
                 text, signer = self._decrypt(raw)   # gpg verifies against the keyring
             except Exception as e:
@@ -3752,7 +3819,8 @@ class App(tk.Tk):
 
         tb = _icon_widget(row, 19, "trash", lambda i=idx: self._remove(i),
                           fg=T4, hover=RD, pbg=rbg, tip="Delete key")
-        tb.pack(side="right", padx=(0, 12))
+        # packed before `mid` so a long name gets clipped instead of pushing the icon out
+        tb.pack(side="right", padx=(0, 12), before=mid)
 
         tk.Frame(holder, bg=DIV, height=1).pack(fill="x")
 
@@ -4069,6 +4137,8 @@ class App(tk.Tk):
         fpr = self.contacts[idx].get("fpr")
         if not fpr:
             messagebox.showerror("No Key", "This entry has no key.", parent=self); return
+        if not self._has_key():                      # no key → no readable copy for you
+            return self._no_key_warning("encrypt (so you can read your own messages)")
         recips = [fpr]
         if self.my_fpr and self.my_fpr not in recips:
             recips.append(self.my_fpr)               # also encrypt to me (keep a readable copy)
@@ -4081,8 +4151,7 @@ class App(tk.Tk):
 
     def _decrypt_zone(self):
         if not self._has_key():
-            messagebox.showwarning("No Keys", "You have no secret key to decrypt with.",
-                                   parent=self); return
+            return self._no_key_warning("decrypt")
         raw = self._zone_text()
         if not raw:
             return

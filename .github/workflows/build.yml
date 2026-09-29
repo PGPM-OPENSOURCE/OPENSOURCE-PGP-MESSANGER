@@ -8,6 +8,12 @@ on:
 permissions:
   contents: write          # needed to attach PGPM.exe to a Release
 
+env:
+  # official GnuPG installer bundled into PGPM-Setup.exe; the hash was taken from a
+  # copy whose signature verified against GnuPG's release key 6DAA6E64…26403ADA
+  GNUPG_SETUP: gnupg-w32-2.5.24_20260923.exe
+  GNUPG_SHA256: ea6f9dee2cccd83287432625b8b399173805add81d27067fcaf019c0c4da1ad8
+
 jobs:
   build:
     runs-on: windows-latest
@@ -28,14 +34,32 @@ jobs:
       - name: Build PGPM.exe
         run: pyinstaller --onefile --windowed --name PGPM --icon assets/icon.ico --add-data "assets;assets" --add-data "fonts;fonts" --noconfirm files/pgp_messenger.py
 
+      - name: Fetch GnuPG installer (pinned, checksum-verified)
+        run: |
+          mkdir -p installer/redist
+          curl -fsSL -o "installer/redist/$GNUPG_SETUP" "https://gnupg.org/ftp/gcrypt/binary/$GNUPG_SETUP"
+          echo "$GNUPG_SHA256  installer/redist/$GNUPG_SETUP" | sha256sum -c -
+
+      - name: Build PGPM-Setup.exe (Inno Setup wizard)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $v = (Select-String -Path files/pgp_messenger.py -Pattern '^APP_VERSION = "(.+)"').Matches[0].Groups[1].Value
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$v" "/DGnuPGSetup=$env:GNUPG_SETUP" installer\PGPM.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: PGPM-windows
-          path: dist/PGPM.exe
+          path: |
+            dist/PGPM.exe
+            dist/PGPM-Setup.exe
 
       - name: Attach to Release (tags only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/PGPM.exe
+          files: |
+            dist/PGPM-Setup.exe
+            dist/PGPM.exe

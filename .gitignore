@@ -22,3 +22,6 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+
+# GnuPG installer bundled into the setup (downloaded + verified at build time)
+installer/redist/
