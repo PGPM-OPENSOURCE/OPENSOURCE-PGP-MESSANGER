@@ -15,7 +15,7 @@ from pgpy.constants import (
 )
 
 try:
-    from PIL import Image, ImageDraw, ImageTk
+    from PIL import Image, ImageChops, ImageDraw, ImageStat, ImageTk
     _HAS_PIL = True
 except Exception:
     _HAS_PIL = False
@@ -117,11 +117,23 @@ _DESKTOP = os.path.join(os.path.expanduser("~"), "Desktop")
 _CUSTOM_PNG = {
     "key":     (os.path.join(_DATA, "key.png"),     os.path.join(_DESKTOP, "key-icon-1.png")),
     "keycard": (os.path.join(_DATA, "keycard.png"), os.path.join(_DESKTOP, "sfbsb.png")),
-    "encrypt": (os.path.join(_DATA, "encrypt.png"), os.path.join(_DESKTOP, "encrypt.png")),
-    "verify":  (os.path.join(_DATA, "verify.png"),  os.path.join(_DESKTOP, "sign1.png")),
-    "plus":    (os.path.join(_DATA, "plus.png"),    os.path.join(_DESKTOP, "uygfd78.png")),
+    "encrypt": (os.path.join(_DATA, "envelope.png"),      os.path.join(_DESKTOP, "encrypt.png")),
+    "verify":  (os.path.join(_DATA, "envelope-open.png"), os.path.join(_DESKTOP, "decrypt.png")),
+    "usbkey":  (os.path.join(_DATA, "usb-key.png"),       os.path.join(_DESKTOP, "keycard.png")),
+    "plus":    (os.path.join(_DATA, "plus-square.png"), os.path.join(_DESKTOP, "add contact.png")),
+    "copy":    (os.path.join(_DATA, "copy.png"),        os.path.join(_DESKTOP, "copy button.png")),
+    "chevdown": (os.path.join(_DATA, "chevron-down.png"),
+                 os.path.join(_DESKTOP, "encrypt more button.png")),
     "shuffle": (os.path.join(_DATA, "shuffle.png"), os.path.join(_DESKTOP, "17446640.png")),
-    "back":    (os.path.join(_DATA, "back.png"),    os.path.join(_DESKTOP, "128x128", "sdfd.png")),
+    "back":    (os.path.join(_DATA, "back-arrow.png"),  os.path.join(_DESKTOP, "back button.png")),
+    "search":  (os.path.join(_DATA, "search.png"),      os.path.join(_DESKTOP, "search.png")),
+    "trash":   (os.path.join(_DATA, "trash.png"),       os.path.join(_DESKTOP, "delete contact.png")),
+    "trash_shut": (os.path.join(_DATA, "trash-closed.png"),
+                   os.path.join(_DESKTOP, "delete contact still.png")),
+    "lock":    (os.path.join(_DATA, "lock.png"),      os.path.join(_DESKTOP, "encrypt small.png")),
+    "generate": (os.path.join(_DATA, "generate.png"), os.path.join(_DESKTOP, "generate button.png")),
+    "import_in": (os.path.join(_DATA, "import.png"),  os.path.join(_DESKTOP, "import button.png")),
+    "unlock":  (os.path.join(_DATA, "lock-open.png"), os.path.join(_DESKTOP, "decrypt small.png")),
 }
 for _dst, _src in _CUSTOM_PNG.values():
     try:
@@ -845,10 +857,40 @@ RAD_WIN = 24  # corner diameter for the app window (≈12px radius, Win11-like)
 APP_W = 920
 APP_H = 540
 
-APP_VERSION = "0.5.7"
+APP_VERSION = "0.5.8"
 GITHUB_REPO = "PGPM-OPENSOURCE/OPENSOURCE-PGP-MESSANGER"
 
-def _make_btn(parent, text, command, w=150, pbg=None, bold=False):
+def _pill_label(cv, cx, text, font, img, fill=WT):
+    """Draw `img` + `text` centred as one group at x=cx on a BTN_H-tall button canvas;
+    returns the text item (None when there's no text)."""
+    if img is not None:
+        cv._icon = img
+    if img is not None and not text:
+        cv.create_image(cx, BTN_H // 2, image=img)
+        return None
+    if img is None:
+        return cv.create_text(cx, BTN_H // 2 + 1, text=text, font=font, fill=fill)
+    iid = cv.create_image(0, 0, image=img)
+    tid = cv.create_text(0, 0, text=text, font=font, fill=fill, anchor="w")
+    cv._pill = (cx, font, iid, tid, img.width())
+    _pill_recenter(cv)
+    return tid
+
+
+def _pill_recenter(cv):
+    """Re-centre a button's icon + label group (after its text changed)."""
+    p = getattr(cv, "_pill", None)
+    if p:
+        import tkinter.font as _tkf
+        cx, font, iid, tid, iw = p
+        x0 = cx - (iw + 7 + _tkf.Font(font=font).measure(cv.itemcget(tid, "text"))) // 2
+        cv.coords(iid, x0 + iw // 2, BTN_H // 2)
+        cv.coords(tid, x0 + iw + 7, BTN_H // 2 + 1)
+
+
+def _make_btn(parent, text, command, w=150, pbg=None, bold=False, icon=None):
+    """Rounded button with an uppercase label; `icon` (a kind name or a ready image) sits
+    before the label, or alone when `text` is empty."""
     pbg = pbg or parent.cget("bg")
     cv = tk.Canvas(parent, width=w, height=BTN_H, bg=pbg,
                    highlightthickness=0, bd=0, takefocus=0)
@@ -859,8 +901,10 @@ def _make_btn(parent, text, command, w=150, pbg=None, bold=False):
         bgid = cv.create_image(0, 0, image=img_n, anchor="nw")
     else:
         bgid = _round_rect(cv, 1, 1, w - 1, BTN_H - 1, RAD_BTN, fill=INP, outline=DIV)
-    tid = cv.create_text(w // 2, BTN_H // 2 + 1, text=text.upper(),
-                         font=(UI, 9, "bold") if bold else (UI, 9), fill=WT)
+    img = None
+    if icon and _HAS_PIL:
+        img = _render_icon(icon, 18, WT) if isinstance(icon, str) else icon
+    tid = _pill_label(cv, w // 2, text.upper(), (UI, 9, "bold") if bold else (UI, 9), img)
     st = {"on": True}
 
     def _setbg(hover):
@@ -876,47 +920,68 @@ def _make_btn(parent, text, command, w=150, pbg=None, bold=False):
     def enter(_):
         if st["on"]:
             _setbg(True)
-            cv.itemconfigure(tid, fill=WT)
+            if tid:
+                cv.itemconfigure(tid, fill=WT)
             cv.configure(cursor="hand2")
 
     def leave(_):
         _setbg(False)
-        cv.itemconfigure(tid, fill=WT if st["on"] else T4)
+        if tid:
+            cv.itemconfigure(tid, fill=WT if st["on"] else T4)
         cv.configure(cursor="")
 
     cv.bind("<Button-1>", click)
     cv.bind("<Enter>", enter)
     cv.bind("<Leave>", leave)
 
-    cv.set_text    = lambda t: cv.itemconfigure(tid, text=t.upper())
+    def _set_text(t):
+        if tid:
+            cv.itemconfigure(tid, text=t.upper())
+            _pill_recenter(cv)                  # keeps an icon + label centred
+    cv.set_text = _set_text
     def _set_enabled(on):
         st["on"] = on
-        cv.itemconfigure(tid, fill=WT if on else T4)
+        if tid:
+            cv.itemconfigure(tid, fill=WT if on else T4)
     cv.set_enabled = _set_enabled
     return cv
 
 
 # ─── Modern rounded dropdown with a styled popup list ─────────────
-def _dropdown(parent, labels, default=None, pbg=None, width=150):
+def _split_btn(parent, text, command, labels, default=None, pbg=None, w=130, tip=None,
+               icon=None):
+    """A button with a chevron segment in the same box: the left part runs `command`,
+    the chevron opens a pick list of `labels`; the pick is kept in `cv._var` (✓ in
+    the list). `tip(var_value)` gives the main part's hover text; `icon` (an image)
+    sits before the label."""
     pbg = pbg or parent.cget("bg")
+    CW = 30                                             # chevron segment width
     var = tk.StringVar(value=default or (labels[0] if labels else ""))
-    cv = tk.Canvas(parent, width=width, height=32, bg=pbg,
-                   highlightthickness=0, bd=0, cursor="hand2")
-    chev = _render_icon("chevron", 14, T2, pbg) if _HAS_PIL else None
-    state = {"pop": None}
+    cv = tk.Canvas(parent, width=w, height=BTN_H, bg=pbg,
+                   highlightthickness=0, bd=0, takefocus=0, cursor="hand2")
+    state = {"pop": None, "hover": None}
+    imgs = {h: _split_img(w, BTN_H, CW, pbg, h) for h in (None, "main", "chev")} \
+        if _HAS_PIL else None
+    if imgs:
+        cv._imgs = imgs
+        bgid = cv.create_image(0, 0, image=imgs[None], anchor="nw")
+        cv._chev = _render_icon("chevdown", 12, T2)
+        cv.create_image(w - CW // 2, BTN_H // 2, image=cv._chev)
+    else:
+        bgid = _round_rect(cv, 1, 1, w - 1, BTN_H - 1, RAD_BTN, fill=INP, outline=DIV)
+        cv.create_text(w - CW // 2, BTN_H // 2, text="▾", fill=T2)
+    _pill_label(cv, (w - CW) // 2, text.upper(), (UI, 9), icon if _HAS_PIL else None)
 
-    def draw(_=None):
-        w = cv.winfo_width()
-        if w <= 1:
-            return
-        _round_bg(cv, INP, 12, outline=DIV)
-        cv.delete("fg")
-        cv.create_text(13, 16, text=var.get(), anchor="w", font=FM, fill=T1, tags="fg")
-        if chev is not None:
-            cv._chev = chev
-            cv.create_image(w - 15, 16, image=chev, tags="fg")
-    cv.bind("<Configure>", draw)
-    var.trace_add("write", lambda *_: draw())
+    def part(x):
+        return "chev" if x >= w - CW else "main"
+
+    def set_hover(h):
+        if h != state["hover"]:
+            state["hover"] = h
+            if imgs:
+                cv.itemconfigure(bgid, image=imgs[h])
+            else:
+                cv.itemconfigure(bgid, fill=HOV if h else INP)
 
     def close(_=None):
         b = state.get("bind")
@@ -933,8 +998,11 @@ def _dropdown(parent, labels, default=None, pbg=None, width=150):
         if state["pop"] is not None:
             close(); return
         cv.update_idletasks()
+        import tkinter.font as _tkf
+        fnt = _tkf.Font(font=FM)
         rowh, vis = 32, min(max(1, len(labels)), 7)
-        w = max(width, cv.winfo_width())
+        # wide enough for the longest name + padding + the ✓ column
+        pw = max(w, max((fnt.measure(lb) for lb in labels), default=0) + 26 + 30)
         ph = vis * rowh + 2
         x = cv.winfo_rootx()
         below = cv.winfo_rooty() + cv.winfo_height() + 3
@@ -944,7 +1012,7 @@ def _dropdown(parent, labels, default=None, pbg=None, width=150):
         else:
             y = below
         top = tk.Toplevel(cv); top.overrideredirect(True); top.configure(bg=DIV)
-        top.geometry(f"{w}x{ph}+{x}+{y}")
+        top.geometry(f"{pw}x{ph}+{x}+{y}")
         state["pop"] = top
         canvas = tk.Canvas(top, bg=INP, highlightthickness=0, bd=0)
         canvas.pack(fill="both", expand=True, padx=1, pady=1)
@@ -956,16 +1024,25 @@ def _dropdown(parent, labels, default=None, pbg=None, width=150):
             except tk.TclError: pass
 
         for lb in labels:
-            r = tk.Label(inner, text=lb, font=FM, bg=INP, fg=T1, anchor="w",
-                         padx=13, pady=7, cursor="hand2")
+            r = tk.Frame(inner, bg=INP, cursor="hand2")
             r.pack(fill="x")
-            r.bind("<Enter>", lambda e, q=r: q.configure(bg=HOV))
-            r.bind("<Leave>", lambda e, q=r: q.configure(bg=INP))
-            r.bind("<Button-1>", lambda e, l=lb: (var.set(l), close(), "break")[-1])
-            r.bind("<MouseWheel>", wheel)
+            cells = [tk.Label(r, text=lb, font=FM, bg=INP, fg=T1, anchor="w",
+                              padx=13, pady=7, cursor="hand2")]
+            cells[0].pack(side="left", fill="x", expand=True)
+            if lb == var.get():                              # the current pick
+                chk = _render_icon("check", 12, T2) if _HAS_PIL else None
+                cells.append(tk.Label(r, image=chk, text="" if chk else "✓", font=FM,
+                                      bg=INP, fg=T2, padx=12, cursor="hand2"))
+                cells[1]._img = chk
+                cells[1].pack(side="right", fill="y")
+            for q in cells:
+                q.bind("<Enter>", lambda e, cs=cells: [c.configure(bg=HOV) for c in cs])
+                q.bind("<Leave>", lambda e, cs=cells: [c.configure(bg=INP) for c in cs])
+                q.bind("<Button-1>", lambda e, l=lb: (var.set(l), close(), "break")[-1])
+                q.bind("<MouseWheel>", wheel)
         inner.update_idletasks()
         canvas.configure(scrollregion=canvas.bbox("all"))
-        canvas.itemconfig(iwin, width=w - 2)
+        canvas.itemconfig(iwin, width=pw - 2)
         canvas.bind("<MouseWheel>", wheel)
         # close on click anywhere in the main window (no grab → cannot lock input)
         rw = cv.winfo_toplevel()
@@ -973,7 +1050,18 @@ def _dropdown(parent, labels, default=None, pbg=None, width=150):
         state["bind"] = (rw, bid)
         top.bind("<Escape>", close)
 
-    cv.bind("<Button-1>", toggle)
+    def click(e):
+        if part(e.x) == "chev":
+            toggle()
+        else:
+            close()
+            command()
+
+    cv.bind("<Motion>", lambda e: set_hover(part(e.x)))
+    cv.bind("<Leave>", lambda e: set_hover(None))
+    cv.bind("<Button-1>", click)
+    if tip:                                  # after the binds above (they'd replace its hooks)
+        _attach_tip(cv, lambda: tip(var.get()))
     cv._var = var
     return cv
 
@@ -1113,11 +1201,40 @@ def _round_rect(cv, x1, y1, x2, y2, r, **kw):
 _RRECT_CACHE = {}
 _RRECT_ROOT = [None]
 
-def _rrect_img(w, h, rad, fill, bg, outline=None, ow=1, ss=3):
+def _rrect_cache():
     root = tk._default_root
     if root is not _RRECT_ROOT[0]:        # new Tk interpreter → drop stale images
         _RRECT_CACHE.clear()
         _RRECT_ROOT[0] = root
+    return _RRECT_CACHE
+
+
+def _split_img(w, h, cw, bg, hover=None, ss=3):
+    """Split-button background: the button box with a divider before its last `cw`
+    px; `hover` ("main" / "chev") lights up just that segment."""
+    key = ("split", w, h, cw, bg, hover)
+    img = _rrect_cache().get(key)
+    if img is not None:
+        return img
+    W, H, X = w * ss, h * ss, (w - cw) * ss
+    box, rad = [0, 0, W - 1, H - 1], RAD_BTN * ss
+    im = Image.new("RGB", (W, H), bg)
+    ImageDraw.Draw(im).rounded_rectangle(box, radius=rad, fill=INP)
+    if hover:
+        lit = Image.new("RGB", (W, H), bg)
+        ImageDraw.Draw(lit).rounded_rectangle(box, radius=rad, fill=HOV)
+        seg = (0, 0, X, H) if hover == "main" else (X, 0, W, H)
+        im.paste(lit.crop(seg), seg[:2])
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle(box, radius=rad, outline=DIV, width=ss)
+    d.line([(X, 7 * ss), (X, H - 7 * ss)], fill=DIV, width=ss)
+    img = ImageTk.PhotoImage(im.resize((w, h), Image.LANCZOS))
+    _RRECT_CACHE[key] = img
+    return img
+
+
+def _rrect_img(w, h, rad, fill, bg, outline=None, ow=1, ss=3):
+    _rrect_cache()
     key = (w, h, rad, fill, bg, outline, ow)
     img = _RRECT_CACHE.get(key)
     if img is not None:
@@ -1330,6 +1447,29 @@ def _pil_more(d, s, c):
         d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=c)
 
 
+def _pil_info(d, s, c):
+    # key info: three short list bars beside a solid panel (drawn on an 18px grid)
+    u = s / 18
+    for y in (4, 8, 12):
+        d.rectangle([2 * u, y * u, 7 * u - 1, (y + 2) * u - 1], fill=c)
+    d.rectangle([9 * u, 4 * u, 16 * u - 1, 14 * u - 1], fill=c)
+
+
+def _pil_profile(d, s, c):
+    # my profile & keys: three rows of short + long bars (drawn on an 18px grid)
+    u = s / 18
+    for y in (4, 8, 12):
+        d.rectangle([2 * u, y * u, 7 * u - 1, (y + 2) * u - 1], fill=c)
+        d.rectangle([9 * u, y * u, 16 * u - 1, (y + 2) * u - 1], fill=c)
+
+
+def _pil_check(d, s, c):
+    # check mark (the current pick in a menu)
+    w = s * 0.12
+    _pl(d, (s * 0.20, s * 0.52), (s * 0.42, s * 0.74), w, c)
+    _pl(d, (s * 0.42, s * 0.74), (s * 0.82, s * 0.28), w, c)
+
+
 def _pil_back(d, s, c):
     # "<" chevron (back)
     w = s * 0.11
@@ -1379,8 +1519,10 @@ def _pil_shuffle(d, s, c):
 _PIL_ICONS = {"search": _pil_search, "plus": _pil_plus,
               "key": _pil_key, "trash": _pil_trash, "menu": _pil_menu,
               "sign": _pil_sign, "verify": _pil_verify, "import": _pil_import,
-              "more": _pil_more, "back": _pil_back, "chevron": _pil_chevron,
-              "keycard": _pil_keycard, "copy": _pil_copy, "shuffle": _pil_shuffle,
+              "more": _pil_more, "info": _pil_info, "profile": _pil_profile, "check": _pil_check,
+              "back": _pil_back, "chevron": _pil_chevron, "chevdown": _pil_chevron,
+              "keycard": _pil_keycard, "usbkey": _pil_keycard, "copy": _pil_copy,
+              "shuffle": _pil_shuffle,
               "encrypt": _pil_sign}   # fallback if Desktop\encrypt.png is missing
 
 
@@ -1410,14 +1552,8 @@ def _custom_mask(kind):
     return mask
 
 
-def _custom_icon_img(kind, size, color):
-    ck = (kind, size, color)
-    if ck in _CUSTOM_ICONS:
-        return _CUSTOM_ICONS[ck]
-    mask = _custom_mask(kind)
-    if mask is None:
-        return None
-    ss = 4
+def _tint_mask(mask, size, color, ss=4):
+    """Fit an alpha mask into a size×size square and fill it with `color`."""
     S = size * ss
     mw, mh = mask.size
     scale = min(S / mw, S / mh)
@@ -1428,9 +1564,96 @@ def _custom_icon_img(kind, size, color):
     rgb = tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
     tinted = Image.new("RGBA", (S, S), rgb + (0,))
     tinted.putalpha(canvas)
-    img = ImageTk.PhotoImage(tinted.resize((size, size), Image.LANCZOS))
+    return ImageTk.PhotoImage(tinted.resize((size, size), Image.LANCZOS))
+
+
+def _custom_icon_img(kind, size, color):
+    ck = (kind, size, color)
+    if ck in _CUSTOM_ICONS:
+        return _CUSTOM_ICONS[ck]
+    mask = _custom_mask(kind)
+    if mask is None:
+        return None
+    img = _tint_mask(mask, size, color)
     _CUSTOM_ICONS[ck] = img
     return img
+
+
+def _custom_alpha(kind):
+    """Full-canvas alpha of a custom icon (no bbox crop), so animation frames line up."""
+    entry = _CUSTOM_PNG.get(kind)
+    for path in ((entry[0], _resource(os.path.basename(entry[0]))) if entry else ()):
+        if path and os.path.exists(path):
+            try:
+                return Image.open(path).convert("RGBA").getchannel("A")
+            except Exception:
+                pass
+    return None
+
+
+def _icon_full(kind, size, color):
+    """A custom icon fitted by its whole canvas rather than its drawing, so a pair drawn on
+    the same canvas (closed / open lock) keeps the same scale. None if missing."""
+    ck = ("full", kind, size, color)
+    if ck not in _CUSTOM_ICONS:
+        a = _custom_alpha(kind) if _HAS_PIL else None
+        _CUSTOM_ICONS[ck] = _tint_mask(a, size, color) if a is not None else None
+    return _CUSTOM_ICONS[ck]
+
+
+def _lid_masks(shut, opened, n=4):
+    """n alpha frames from the closed bin to the open one. The lid (the rows where the two
+    drawings differ) is rotated toward the open lid, angle + hinge fitted to the drawings;
+    a plain cross-fade if the open lid isn't a clean rotation of the closed one."""
+    W, H = shut.size
+    fade = [Image.blend(shut, opened, k / (n - 1)) for k in range(n)]
+    diff = ImageChops.difference(shut, opened)
+    rows = [y for y in range(H) if ImageStat.Stat(diff.crop((0, y, W, y + 1))).sum[0] > 255]
+    if not rows:
+        return fade
+    split = rows[-1] + 1
+
+    def part(mask, top, bottom):
+        out = Image.new("L", (W, H), 0)
+        out.paste(mask.crop((0, top, W, bottom)), (0, top))
+        return out
+
+    lid, lid_open, body = part(shut, 0, split), part(opened, 0, split), part(shut, split, H)
+    if lid.getbbox() is None:
+        return fade
+
+    def overlap(a, b):                                   # intersection over union
+        u = ImageStat.Stat(ImageChops.lighter(a, b)).sum[0]
+        return ImageStat.Stat(ImageChops.darker(a, b)).sum[0] / u if u else 0
+
+    x0, y0, x1, y1 = lid.getbbox()
+    score, ang, piv = max(
+        ((overlap(lid.rotate(a, Image.BICUBIC, center=(px, py)), lid_open), a, (px, py))
+         for a in range(-45, 46, 3) for px in range(x0, x1 + 1, 3)
+         for py in (y0, (y0 + y1) // 2, y1)), key=lambda t: t[0])
+    if score < 0.6:
+        return fade
+    return [shut] + [ImageChops.lighter(body, lid.rotate(ang * k / (n - 1), Image.BICUBIC,
+                                                         center=piv))
+                     for k in range(1, n - 1)] + [opened]
+
+
+_ANIM_FRAMES = {}
+
+def _trash_frames(size, color):
+    """Tinted frames, closed bin → lid open (the user's two drawings), or None."""
+    key = (size, color)
+    if key not in _ANIM_FRAMES:
+        frames = None
+        shut, opened = _custom_alpha("trash_shut"), _custom_alpha("trash")
+        if shut is not None and opened is not None and shut.size == opened.size:
+            masks = _lid_masks(shut, opened)
+            boxes = [mk.getbbox() for mk in masks if mk.getbbox()]
+            box = (min(b[0] for b in boxes), min(b[1] for b in boxes),
+                   max(b[2] for b in boxes), max(b[3] for b in boxes))
+            frames = [_tint_mask(mk.crop(box), size, color) for mk in masks]   # one shared crop
+        _ANIM_FRAMES[key] = frames
+    return _ANIM_FRAMES[key]
 
 
 def _render_icon(kind, size, color, bg=None, ss=4):
@@ -1455,8 +1678,8 @@ def _attach_tip(widget, text):
         t = tk.Toplevel(widget)
         t.overrideredirect(True)
         t.configure(bg=DIV)
-        tk.Label(t, text=text, font=(UI, 8), bg="#202022", fg=T1,
-                 padx=8, pady=3).pack(padx=1, pady=1)
+        tk.Label(t, text=text() if callable(text) else text, font=(UI, 8), bg="#202022",
+                 fg=T1, padx=8, pady=3).pack(padx=1, pady=1)
         t.update_idletasks()
         x = widget.winfo_rootx() + widget.winfo_width() // 2 - t.winfo_width() // 2
         y = widget.winfo_rooty() - t.winfo_height() - 5
@@ -1499,6 +1722,45 @@ def _icon_widget(parent, size, kind, command, fg=T2, hover=T1, pbg=None, tip=Non
     if tip:
         _attach_tip(w, tip)
     return w
+
+
+def _trash_button(parent, size, command, fg=T3, hover=RD, pbg=None, tip=None):
+    """Delete button: while hovered the bin turns `hover` and its lid swings open over a
+    few frames; it swings shut again on leave."""
+    rest = _trash_frames(size, fg) if _HAS_PIL else None
+    lit = _trash_frames(size, hover) if _HAS_PIL else None
+    if not rest or not lit:
+        return _icon_widget(parent, size, "trash", command, fg=fg, hover=hover, pbg=pbg, tip=tip)
+    pbg = pbg or parent.cget("bg")
+    lbl = tk.Label(parent, image=rest[0], bg=pbg, cursor="hand2", bd=0)
+    lbl._imgs = (rest, lit)                     # keep refs from GC
+    st = {"i": 0, "dir": 0, "job": None}
+
+    def step():
+        st["job"] = None
+        if not lbl.winfo_exists():
+            return
+        i = st["i"] + st["dir"]
+        if 0 <= i < len(lit):
+            st["i"] = i
+            lbl.configure(image=lit[i])
+            st["job"] = lbl.after(35, step)
+        elif st["dir"] < 0:
+            lbl.configure(image=rest[0])        # shut again → resting colour
+
+    def go(d):
+        st["dir"] = d
+        if d > 0:
+            lbl.configure(image=lit[st["i"]])
+        if st["job"] is None:
+            st["job"] = lbl.after(35, step)
+
+    lbl.bind("<Enter>", lambda _: go(1))
+    lbl.bind("<Leave>", lambda _: go(-1))
+    lbl.bind("<Button-1>", lambda _: command())
+    if tip:
+        _attach_tip(lbl, tip)
+    return lbl
 
 
 # ─── Offline "rewrite for anonymity": grammar/spelling + style normalizer ─────
@@ -1943,7 +2205,7 @@ class App(tk.Tk):
         sbar.pack_propagate(False)
 
         # Hamburger menu icon → opens info/keys panel
-        _icon_widget(sbar, 20, "menu", lambda: self._show("info", self._open_info),
+        _icon_widget(sbar, 18, "profile", lambda: self._show("info", self._open_info),
                      fg=T2, hover=T1, tip="My profile & keys").pack(
                      side="left", padx=(10, 4), pady=14)
 
@@ -1994,17 +2256,25 @@ class App(tk.Tk):
         _set_ph()
 
         # Bottom-left toolbar: Sign/Encrypt · Decrypt/Verify · Import (.asc)
+        # 30px boxed icons, evenly spaced (20 · 30 · 20 · 30 · 20 · 30 · 20 · 30 · 20 = the
+        # 220px sidebar), centred on the same line as the panels' button rows
         tk.Frame(self._sb_frame, bg=DIV, height=1).pack(side="bottom", fill="x")
         tools = tk.Frame(self._sb_frame, bg=SBG)
-        tools.pack(side="bottom", fill="x", pady=10)
-        for kind, view, cmd, tip in (
+        tools.pack(side="bottom", fill="x", pady=(10, 13))
+        # dim like the search icon; bright only on hover or while their tab is open
+        self._tool_icons = {}
+        for i, (kind, view, cmd, tip) in enumerate((
                 ("plus",    "add",     self._open_add_contact, "Add contact"),
                 ("encrypt", "encrypt", self._open_encrypt,     "Sign / Encrypt"),
                 ("verify",  "decrypt", self._open_decrypt,     "Decrypt / Verify"),
-                ("keycard", "card",    self._open_card,        "Smartcard / Keycard")):
-            _icon_widget(tools, 24, kind, lambda v=view, c=cmd: self._show(v, c),
-                         fg=T2, hover=T1, tip=tip).pack(
-                side="left", padx=(16, 18) if kind == "plus" else (0, 18))
+                ("usbkey",  "card",    self._open_card,        "Smartcard / Keycard"))):
+            ic = _icon_widget(tools, 30, kind, lambda v=view, c=cmd: self._show(v, c),
+                              fg=T3, hover=T2, tip=tip)
+            if _HAS_PIL:
+                ic.configure(padx=0, pady=0)            # exactly 30px, no label padding
+            ic.pack(side="left", padx=(20, 0))
+            ic.bind("<Leave>", lambda _: self._sync_tool_icons(), add="+")   # keep the open tab lit
+            self._tool_icons[view] = ic
 
         # Contact list (scrollable, fills the middle; scrollbar on the left)
         self._clist_sf = ScrollFrame(self._sb_frame, bg=SBG, thumb_side="left")
@@ -2048,6 +2318,20 @@ class App(tk.Tk):
             if w is not self._main:
                 try: w.destroy()
                 except Exception: pass
+        self._sync_tool_icons()                  # the builder has tagged self._view by now
+
+    def _sync_tool_icons(self):
+        """Light up the toolbar icon of the open tab (and one under the pointer);
+        the others stay dim."""
+        try:
+            under = self.winfo_containing(*self.winfo_pointerxy())
+        except Exception:
+            under = None
+        for view, ic in getattr(self, "_tool_icons", {}).items():
+            imgs = getattr(ic, "_imgs", None)
+            if imgs:
+                lit = view == getattr(self, "_view", None) or ic is under
+                ic.configure(image=imgs[1] if lit else imgs[0])
 
     # ── Panel header ──────────────────────────────────────────────
     def _panel_hdr(self, title, back_fn=None, right_widgets_fn=None):
@@ -2057,8 +2341,9 @@ class App(tk.Tk):
         if back_fn:
             _icon_widget(h, 16, "back", back_fn, fg=T3, hover=T1).pack(
                 side="left", padx=(14, 0), pady=16)
-        tk.Label(h, text=title, font=FB, bg=HDR, fg=T1,
-                 padx=14 if not back_fn else 8).pack(side="left", pady=10)
+        if title:
+            tk.Label(h, text=title, font=FB, bg=HDR, fg=T1,
+                     padx=14 if not back_fn else 8).pack(side="left", pady=10)
         if right_widgets_fn:
             right_widgets_fn(h)
         tk.Frame(self._main, bg=DIV, height=1).pack(fill="x")
@@ -2153,7 +2438,8 @@ class App(tk.Tk):
         self._gen_pass = tk.StringVar()
         _make_entry(gr, self._gen_pass, show="•")
 
-        self._gen_btn = _make_btn(gr, "generate  (rsa 4096)", self._generate_key, w=200)
+        self._gen_btn = _make_btn(gr, "generate  (rsa 4096)", self._generate_key, w=200,
+                                  icon=_icon_full("generate", 16, T2))
         self._gen_btn.pack(anchor="w", pady=(10, 0))
 
         # ─ Import key (public or private, armored) ─
@@ -2166,8 +2452,10 @@ class App(tk.Tk):
         scroll.bind_scroll_to(self._imp_t)
 
         ibr = tk.Frame(ir, bg=BK); ibr.pack(anchor="w")
-        _make_btn(ibr, "import pasted",    self._import_key, w=130).pack(side="left")
-        _make_btn(ibr, "import .asc file", self._import_asc, w=140).pack(side="left", padx=(8, 0))
+        imp = _icon_full("import_in", 17, T2)
+        _make_btn(ibr, "import pasted",    self._import_key, w=156, icon=imp).pack(side="left")
+        _make_btn(ibr, "import .asc file", self._import_asc, w=160, icon=imp).pack(
+            side="left", padx=(8, 0))
 
         tk.Frame(f, bg=BK, height=20).pack()
         scroll.scroll_top()
@@ -2616,7 +2904,6 @@ class App(tk.Tk):
     def _open_card(self):
         self._clear_main()
         self._view = "card"
-        self._panel_hdr("Smartcard / Keycard", back_fn=self._welcome)
         scroll = ScrollFrame(self._main, bg=BK)
         scroll.pack(fill="both", expand=True)
         f = scroll.inner
@@ -2794,22 +3081,22 @@ class App(tk.Tk):
     def _open_add_contact(self):
         self._clear_main()
         self._view = "add"
-        self._panel_hdr("Import key", back_fn=self._welcome)
 
+        # no header; same box geometry as the chat / Sign / Decrypt panels (top in line
+        # with the search pill, buttons in line with the toolbar)
         f = tk.Frame(self._main, bg=BK)
-        f.pack(fill="both", expand=True, padx=28, pady=16)
-        tk.Label(f, text="Paste a PGP public or private key (armored), or import a .asc file.\n"
-                         "Keys are added to the GnuPG keyring.",
-                 font=FS, bg=BK, fg=T3, justify="left").pack(anchor="w", pady=(0, 8))
+        f.pack(fill="both", expand=True, padx=16, pady=(11, 12))
 
         bf = tk.Frame(f, bg=BK)
-        bf.pack(side="bottom", fill="x", pady=(14, 0))
-        _make_btn(bf, "Import",           self._save_contact, w=110).pack(side="left")
-        _make_btn(bf, "import .asc file",  self._import_asc,   w=140).pack(side="left", padx=(8, 0))
+        bf.pack(side="bottom", fill="x", pady=(10, 0))
+        imp = _icon_full("import_in", 17, T2)
+        _make_btn(bf, "Import",           self._save_contact, w=110, icon=imp).pack(side="left")
+        _make_btn(bf, "import .asc file",  self._import_asc,   w=160, icon=imp).pack(
+            side="left", padx=(8, 0))
         _make_btn(bf, "Cancel",            self._welcome,      w=90).pack(side="left", padx=(8, 0))
 
         kcv, self._ac_key = _round_text(f, fg=T1)
-        kcv.pack(fill="both", expand=True, pady=(2, 0))
+        kcv.pack(fill="both", expand=True)
         PH = "paste pgp key here…"
         self._ac_key.insert("1.0", PH); self._ac_key.configure(fg=T3)
 
@@ -2866,16 +3153,17 @@ class App(tk.Tk):
         self._welcome()
 
     def _recipients(self):
-        """label -> fingerprint map of public keys in the keyring."""
+        """label -> fingerprint map of public keys in the keyring (contacts first, so
+        the default pick is a person — the Encrypt button doesn't show who it is)."""
         opts = {}
-        if self.my_fpr:                          # encrypt a copy only you can read
-            opts["Only me"] = self.my_fpr
         for c in self.contacts:
             label = c.get("name") or c.get("email") or c.get("keyid", "")
             if c.get("secret"):
                 label += "  (me)"
             if label and label not in opts:
                 opts[label] = c["fpr"]
+        if self.my_fpr and "Only me" not in opts:    # encrypt a copy only you can read
+            opts["Only me"] = self.my_fpr
         return opts
 
     def _load_into(self, textw):
@@ -2889,9 +3177,8 @@ class App(tk.Tk):
     def _open_encrypt(self):
         self._clear_main()
         self._view = "encrypt"
-        self._panel_hdr("Sign / Encrypt", back_fn=self._welcome)
-        f = tk.Frame(self._main, bg=BK)
-        f.pack(fill="both", expand=True, padx=16, pady=12)
+        f = tk.Frame(self._main, bg=BK)             # no header (top in line with the search pill)
+        f.pack(fill="both", expand=True, padx=16, pady=(11, 12))
 
         tcv, txt = _round_text(f, font=FM, fg=T1, pbg=BK)
         tcv.pack(fill="both", expand=True)
@@ -2906,9 +3193,6 @@ class App(tk.Tk):
         bar.pack(fill="x", pady=(10, 0))
         opts = self._recipients()
         labels = list(opts.keys()) or ["(no keys)"]
-        dd = _dropdown(bar, labels, default=labels[0], pbg=BK, width=130)
-        tk.Label(bar, text="to", font=FS, bg=BK, fg=T3).pack(side="left", padx=(0, 5))
-        dd.pack(side="left", padx=(0, 8))
 
         def body():
             t = txt.get("1.0", "end-1c")
@@ -2931,7 +3215,7 @@ class App(tk.Tk):
             t = body()
             if not t.strip():
                 return
-            fpr = opts.get(dd._var.get())
+            fpr = opts.get(enc._var.get())
             if not fpr:
                 return messagebox.showwarning("No Recipient",
                     "Pick a recipient (import a key first).", parent=self)
@@ -2960,18 +3244,31 @@ class App(tk.Tk):
                 except Exception as e:
                     messagebox.showerror("Save Error", str(e), parent=self)
 
-        _make_btn(bar, "import file", lambda: self._load_into(txt), w=110, pbg=BK).pack(side="left")
-        _make_btn(bar, "save",    save_out,   w=64, pbg=BK).pack(side="right")
-        _make_btn(bar, "encrypt", do_encrypt, w=86, pbg=BK).pack(side="right", padx=(0, 6))
+        def copy_out():
+            t = body()
+            if t.strip():
+                self.clipboard_clear(); self.clipboard_append(t)
+
+        # same layout as Decrypt / Verify: action · import file on the left, copy at the far
+        # right. ENCRYPT's ▼ holds the contacts to encrypt to.
+        enc = _split_btn(bar, "encrypt", do_encrypt, labels, pbg=BK, w=150,
+                         tip=lambda lb: f"Encrypt to {lb}" if lb in opts else "Import a key first",
+                         icon=_icon_full("lock", 16, T2))
+        enc.pack(side="left", padx=(0, 8))
+        _make_btn(bar, "import file", lambda: self._load_into(txt), w=132, pbg=BK,
+                  icon=_icon_full("import_in", 17, T2)).pack(side="left")
+        cb = _make_btn(bar, "", copy_out, w=52, pbg=BK, icon="copy")
+        cb.pack(side="right")
+        _attach_tip(cb, "Copy")
+        _make_btn(bar, "save",    save_out,   w=64, pbg=BK).pack(side="right", padx=(0, 6))
         _make_btn(bar, "sign",    do_sign,    w=64, pbg=BK).pack(side="right", padx=(0, 6))
 
     # ── Decrypt / Verify panel ────────────────────────────────────
     def _open_decrypt(self):
         self._clear_main()
         self._view = "decrypt"
-        self._panel_hdr("Decrypt / Verify", back_fn=self._welcome)
-        f = tk.Frame(self._main, bg=BK)
-        f.pack(fill="both", expand=True, padx=16, pady=12)
+        f = tk.Frame(self._main, bg=BK)             # no header (top in line with the search pill)
+        f.pack(fill="both", expand=True, padx=16, pady=(11, 12))
 
         tcv, txt = _round_text(f, font=FM, fg=T1, pbg=BK)
         tcv.pack(fill="both", expand=True)
@@ -2981,9 +3278,6 @@ class App(tk.Tk):
         txt.insert("1.0", PH); txt.configure(fg=T3)
         txt.bind("<FocusIn>", lambda _: (txt.get("1.0", "end-1c") == PH) and
                  (txt.delete("1.0", "end"), txt.configure(fg=T1)))
-
-        status = tk.Label(f, text="", font=FS, bg=BK, fg=T3, anchor="w")
-        status.pack(fill="x", pady=(8, 0))
 
         def do_decrypt():
             raw = txt.get("1.0", "end-1c").strip()
@@ -3012,10 +3306,24 @@ class App(tk.Tk):
                 status.configure(image="", text="• processed (no verifiable signature)", fg=T3)
             self._hide_status_later(status)          # clear the line after 4 seconds
 
+        def copy_out():
+            t = txt.get("1.0", "end-1c")
+            if t.strip() and t != PH:
+                self.clipboard_clear(); self.clipboard_append(t)
+
+        # same layout as Sign / Encrypt: action · import file on the left, copy at the far
+        # right; the status sits in the row so the box is the same height in both panels
         bar = tk.Frame(f, bg=BK)
         bar.pack(fill="x", pady=(10, 0))
-        _make_btn(bar, "import file", lambda: self._load_into(txt), w=110, pbg=BK).pack(side="left")
-        _make_btn(bar, "decrypt / verify", do_decrypt, w=150, pbg=BK).pack(side="right")
+        _make_btn(bar, "decrypt / verify", do_decrypt, w=150, pbg=BK,
+                  icon=_icon_full("unlock", 16, T2)).pack(side="left", padx=(0, 8))
+        _make_btn(bar, "import file", lambda: self._load_into(txt), w=132, pbg=BK,
+                  icon=_icon_full("import_in", 17, T2)).pack(side="left")
+        cb = _make_btn(bar, "", copy_out, w=52, pbg=BK, icon="copy")
+        cb.pack(side="right")
+        _attach_tip(cb, "Copy")
+        status = tk.Label(bar, text="", font=FS, bg=BK, fg=T3, anchor="e")
+        status.pack(side="right", fill="x", expand=True, padx=8)
 
     def _hide_status_later(self, status):
         job = getattr(self, "_status_clear_job", None)
@@ -3035,9 +3343,11 @@ class App(tk.Tk):
     def _show_contact_key(self, contact):
         self._clear_main()
         idx = self.active
-        self._panel_hdr(
-            contact.get("name") or contact.get("keyid", "Key"),
-            back_fn=lambda: (self._open(idx) if isinstance(idx, int) else self._welcome())
+        self._panel_hdr(      # back arrow + delete in the top-right corner (no name)
+            "", back_fn=lambda: (self._open(idx) if isinstance(idx, int) else self._welcome()),
+            right_widgets_fn=lambda h: _trash_button(
+                h, 19, lambda: self._delete_from_tab(contact),
+                fg=T3, hover=RD, tip="Delete key").pack(side="right", padx=(0, 16), pady=16)
         )
 
         f = tk.Frame(self._main, bg=BK)
@@ -3069,10 +3379,13 @@ class App(tk.Tk):
 
         def cp():
             self.clipboard_clear(); self.clipboard_append(pub)
-            cpb.configure(text="✓ copied", fg=GN)
-            self.after(1800, lambda: cpb.configure(text="copy public key", fg=T2))
 
-        # actions for this key live in its tab
+        # copy button in the box's top-right corner (above the text, never scrolls)
+        cpy = _icon_widget(pcv, 18, "copy", cp, fg=T3, hover=T1, pbg=INP, tip="Copy public key")
+        cpy.place(relx=1.0, x=-10, y=10, anchor="ne")
+        pcv.bind("<Configure>", lambda _: cpy.lift(), add="+")
+
+        # actions for this key live in its tab (copy + delete sit on the box / header)
         acts = tk.Frame(f, bg=BK); acts.pack(anchor="w", pady=(10, 0))
         fpr = contact.get("fpr", "")
         sep = lambda: tk.Label(acts, text="  ·  ", font=FS, bg=BK, fg=T4).pack(side="left")
@@ -3082,14 +3395,10 @@ class App(tk.Tk):
                   lambda: (self._set_active(fpr), self._refresh(),
                            self._show_contact_key(contact))).pack(side="left")
             sep()
-        cpb = _link(acts, "copy public key", cp); cpb.pack(side="left")
-        sep()
         _link(acts, "export public", lambda: self._export_key(fpr, False)).pack(side="left")
         if contact.get("secret") and not contact.get("on_card"):
             sep()
             _link(acts, "export secret", lambda: self._export_key(fpr, True)).pack(side="left")
-        sep()
-        _link(acts, "delete", lambda: self._delete_from_tab(contact), fg=RD).pack(side="left")
 
     def _delete_from_tab(self, contact):
         secret = contact.get("secret")
@@ -3817,14 +4126,19 @@ class App(tk.Tk):
             badge = tk.Label(mid, text="⚠ " + st[0], font=(UI, 8), bg=rbg, fg=st[1], anchor="w")
             badge.pack(anchor="w")
 
-        tb = _icon_widget(row, 19, "trash", lambda i=idx: self._remove(i),
-                          fg=T4, hover=RD, pbg=rbg, tip="Delete key")
-        # packed before `mid` so a long name gets clipped instead of pushing the icon out
-        tb.pack(side="right", padx=(0, 12), before=mid)
+        # key info (delete lives in its tab); packed before `mid` so a long name gets
+        # clipped instead of pushing the icon out
+        side = tk.Frame(row, bg=rbg)
+        side.pack(side="right", padx=(0, 12), before=mid)
+        ib = _icon_widget(side, 18, "info",
+                          lambda i=idx, c=contact: (self._highlight_active(i),
+                                                    self._show_contact_key(c)),
+                          fg=T4, hover=T1, pbg=rbg, tip="Key info")
+        ib.pack()
 
         tk.Frame(holder, bg=DIV, height=1).pack(fill="x")
 
-        widgets = [row, mid, nl, tb] + ([sl] if sl else []) + ([badge] if badge else [])
+        widgets = [row, mid, nl, side, ib] + ([sl] if sl else []) + ([badge] if badge else [])
         hay = " ".join([contact.get("name", ""), contact.get("email", ""),
                         contact.get("keyid", ""), contact.get("fpr", "")]).lower()
         fpr = contact.get("fpr")
@@ -4060,30 +4374,17 @@ class App(tk.Tk):
     def _build_chat(self, idx):
         self._clear_main()
         c = self.contacts[idx]
-
-        # Header: contact name + key + trash icons
-        h = tk.Frame(self._main, bg=HDR, height=52)
-        h.pack(fill="x")
-        h.pack_propagate(False)
-
-        _icon_widget(h, 16, "back", self._welcome, fg=T3, hover=T1).pack(
-            side="left", padx=(14, 0), pady=16)
         nm = c.get("name") or c.get("email") or c.get("keyid", "Key")
-        tk.Label(h, text=nm, font=FB, bg=HDR, fg=T1, padx=8).pack(side="left", pady=10)
 
-        # 3-dot menu → view this key's info (selectable / copyable)
-        vk = _icon_widget(h, 20, "more", lambda: self._show_contact_key(c),
-                          fg=T3, hover=T1, tip="Key info")
-        vk.pack(side="right", padx=(4, 14), pady=16)
-
-        # Typing zone under the name (rounded, fills the panel)
+        # Typing zone fills the panel (no header — key info lives on the contact row); same
+        # box geometry as the Sign / Decrypt / Import panels
         zone = tk.Frame(self._main, bg=BK)
-        zone.pack(fill="both", expand=True, padx=14, pady=(12, 8))
+        zone.pack(fill="both", expand=True, padx=16, pady=(11, 0))
         zcv, self._msg_in = _round_text(zone, font=FM, fg=T1, pbg=BK)
         zcv.pack(fill="both", expand=True)
         self._register_drop_target(zcv, self._msg_in)   # dropped files land here
 
-        PHZ = "Type a message to encrypt…"
+        PHZ = self._PHZ = f"Type a message to {nm}…"
         self._msg_in.insert("1.0", PHZ)
         self._msg_in.configure(fg=T3)
 
@@ -4100,17 +4401,20 @@ class App(tk.Tk):
         self._msg_in.bind("<FocusIn>", _zfi)
         self._msg_in.bind("<FocusOut>", _zfo)
 
-        # Signing / verification status (updated on encrypt / decrypt)
-        self._chat_status = tk.Label(self._main, text="", font=FS, bg=BK, fg=T3, anchor="w")
-        self._chat_status.pack(fill="x", padx=16, pady=(0, 2))
-
-        # Buttons: Encrypt · Decrypt · shuffle · Copy
+        # Buttons: Encrypt · Decrypt · [status] · Copy
         # (encryption always also targets your own key so you can re-open sent messages)
         br = tk.Frame(self._main, bg=BK)
-        br.pack(fill="x", padx=14, pady=(0, 14))
-        _make_btn(br, "Encrypt", lambda: self._encrypt_zone(idx), w=130).pack(side="left")
-        _make_btn(br, "Decrypt", self._decrypt_zone, w=130).pack(side="left", padx=(8, 0))
-        _make_btn(br, "Copy",    self._copy_zone,    w=90, bold=True).pack(side="right")
+        br.pack(fill="x", padx=16, pady=(10, 12))    # bottom in line with the toolbar icons
+        _make_btn(br, "Encrypt", lambda: self._encrypt_zone(idx), w=130,
+                  icon=_icon_full("lock", 16, T2)).pack(side="left")
+        _make_btn(br, "Decrypt", self._decrypt_zone, w=130,
+                  icon=_icon_full("unlock", 16, T2)).pack(side="left", padx=(8, 0))
+        cb = _make_btn(br, "", self._copy_zone, w=52, icon="copy")
+        cb.pack(side="right")
+        _attach_tip(cb, "Copy")
+        # status (updated on encrypt / decrypt) sits in the row, as on Decrypt / Verify
+        self._chat_status = tk.Label(br, text="", font=FS, bg=BK, fg=T3, anchor="e")
+        self._chat_status.pack(side="right", fill="x", expand=True, padx=8)
 
     # ── Encrypt / Decrypt in the typing zone ──────────────────────
     _PHZ = "Type a message to encrypt…"
@@ -4189,31 +4493,6 @@ class App(tk.Tk):
             if res[0] is not None:
                 self._zone_set(res[0])
         self.after(80, poll)
-
-    # ── Contact management ────────────────────────────────────────
-    def _remove(self, idx):
-        c = self.contacts[idx]
-        nm = c.get("name") or c.get("keyid", "this key")
-        if c.get("secret"):
-            if not messagebox.askyesno("Delete secret key",
-                f"{nm} is one of YOUR keys (has a private key).\n\n"
-                "Delete it from the GnuPG keyring? This cannot be undone.", parent=self):
-                return
-            try:
-                Card.delete_secret(c["fpr"])
-            except Exception as e:
-                messagebox.showerror("Error", str(e), parent=self); return
-        else:
-            if not messagebox.askyesno("Remove key",
-                f"Remove {nm} from the keyring?", parent=self):
-                return
-            try:
-                Card.delete_pub(c["fpr"])
-            except Exception as e:
-                messagebox.showerror("Error", str(e), parent=self); return
-        self.active = None
-        self._refresh()
-        self._welcome()
 
 
 if __name__ == "__main__":

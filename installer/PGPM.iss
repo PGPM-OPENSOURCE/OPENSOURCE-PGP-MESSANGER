@@ -37,8 +37,9 @@ SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\PGPM.exe
 UninstallDisplayName=PGPM
 WizardStyle=modern dark
-WizardImageFile=wizard-large-100.png,wizard-large-125.png,wizard-large-150.png,wizard-large-200.png
-WizardSmallImageFile=wizard-small-100.png,wizard-small-125.png,wizard-small-150.png,wizard-small-200.png
+; no wizard logo images (empty = hidden)
+WizardImageFile=
+WizardSmallImageFile=
 Compression=lzma2/max
 SolidCompression=yes
 
@@ -108,8 +109,21 @@ begin
     WizardForm.NextButton.Enabled := GnuPGChecked();
 end;
 
+// no logo on the Welcome / Finished pages: let their text use the whole page width
+procedure SpanPage(L: TNewStaticText; Page: TNewNotebookPage);
+begin
+  L.Left := ScaleX(32);
+  L.Width := Page.ClientWidth - ScaleX(64);
+end;
+
 procedure InitializeWizard();
 begin
+  WizardForm.WizardBitmapImage.Visible := False;
+  WizardForm.WizardBitmapImage2.Visible := False;
+  SpanPage(WizardForm.WelcomeLabel1, WizardForm.WelcomePage);
+  SpanPage(WizardForm.WelcomeLabel2, WizardForm.WelcomePage);
+  SpanPage(WizardForm.FinishedHeadingLabel, WizardForm.FinishedPage);
+  SpanPage(WizardForm.FinishedLabel, WizardForm.FinishedPage);
   GnuPGFound := FindGnuPG() <> '';
   WizardForm.TasksList.OnClickCheck := @TasksClickCheck;
   GnuPGPage := CreateOutputProgressPage('Installing GnuPG',
