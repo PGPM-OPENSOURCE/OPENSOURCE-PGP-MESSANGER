@@ -694,7 +694,7 @@ class ScrollFrame(tk.Frame):
             tk.Frame(self.inner, bg=bg).pack(side="top", fill="both", expand=True)
         self._win  = self._c.create_window((0, 0), window=self.inner, anchor="nw")
         # slim rounded-pill scrollbar thumb (overlaid, drag-enabled)
-        self._thumb = tk.Canvas(self, bg=self._bg, highlightthickness=0, bd=0, width=5)
+        self._thumb = tk.Canvas(self, bg=self._bg, highlightthickness=0, bd=0, width=6)
         self._thumb.bind("<Button-1>",  self._thumb_press)
         self._thumb.bind("<B1-Motion>", self._thumb_drag)
         self.inner.bind("<Configure>", self._on_inner)
@@ -739,6 +739,9 @@ class ScrollFrame(tk.Frame):
     def _yset(self, first, last):
         self._first, self._last = float(first), float(last)
         self._draw_thumb()
+        cb = getattr(self, "on_view", None)          # view scrolled / content resized
+        if cb:
+            cb()
 
     def _draw_thumb(self):
         if self._first <= 0.0 and self._last >= 1.0:
@@ -759,7 +762,7 @@ class ScrollFrame(tk.Frame):
         progress = (self._first / scroll_range) if scroll_range > 1e-9 else 0.0
         progress = min(1.0, max(0.0, progress))
         top = int(pad + progress * usable)
-        W = 4                                      # slim
+        W = 6                                      # slim (a touch wider for the grip)
         if self._thumb_side == "left":
             self._thumb.place(relx=0.0, x=3, y=top, width=W, height=h, anchor="nw")
         else:
@@ -771,6 +774,9 @@ class ScrollFrame(tk.Frame):
             self._thumb.create_image(0, 0, image=self._thumb_img, anchor="nw")
         else:
             _round_rect(self._thumb, 0, 0, W, h, W / 2.0, fill=SCRL, outline="")
+        grip = _mix_hex(SCRL, self._bg, 0.6)       # three short grip lines in the middle
+        for dy in (-3, 0, 3):
+            self._thumb.create_line(1, h // 2 + dy, W - 1, h // 2 + dy, fill=grip)
         try: self.tk.call("raise", self._thumb._w)   # raise the widget (Canvas.lift is tag_raise)
         except Exception: pass
         # auto-hide after 4s of no scroll activity
@@ -857,7 +863,7 @@ RAD_WIN = 24  # corner diameter for the app window (≈12px radius, Win11-like)
 APP_W = 920
 APP_H = 540
 
-APP_VERSION = "0.5.8"
+APP_VERSION = "0.6.0"
 GITHUB_REPO = "PGPM-OPENSOURCE/OPENSOURCE-PGP-MESSANGER"
 
 def _pill_label(cv, cx, text, font, img, fill=WT):
@@ -1550,6 +1556,13 @@ def _custom_mask(kind):
                 mask = None
     _CUSTOM_MASK[kind] = mask
     return mask
+
+
+def _mix_hex(a, b, t):
+    """Colour `t` of the way from #rrggbb `a` to `b`."""
+    ca = [int(a[i:i + 2], 16) for i in (1, 3, 5)]
+    cb = [int(b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(round(x + (y - x) * t) for x, y in zip(ca, cb))
 
 
 def _tint_mask(mask, size, color, ss=4):
@@ -2280,6 +2293,7 @@ class App(tk.Tk):
         self._clist_sf = ScrollFrame(self._sb_frame, bg=SBG, thumb_side="left")
         self._clist_sf.pack(fill="both", expand=True)
         self._clist = self._clist_sf.inner
+        self._clist_sf.on_view = self._fade_rows     # bottom-edge fade follows scrolling
 
         # Vertical divider
         tk.Frame(body, bg=DIV, width=1).pack(side="left", fill="y")
@@ -2579,21 +2593,21 @@ class App(tk.Tk):
         try:
             sk = Card.export_secret(fpr)
         except Exception as e:
-            messagebox.showerror("Error", str(e), parent=self); return
+            self._error("Error", str(e), parent=self); return
         if not sk:
-            messagebox.showwarning("Nothing to copy", "No private key found.", parent=self); return
+            self._warn("Nothing to copy", "No private key found.", parent=self); return
         self.clipboard_clear(); self.clipboard_append(sk)
-        messagebox.showinfo("Copied", "Private key copied to clipboard.", parent=self)
+        self._info("Copied", "Private key copied to clipboard.", parent=self)
 
     def _copy_pub(self, fpr):
         try:
             pub = Card.export_pub(fpr)
         except Exception as e:
-            messagebox.showerror("Error", str(e), parent=self); return
+            self._error("Error", str(e), parent=self); return
         if not pub:
-            messagebox.showwarning("Nothing to copy", "No public key found.", parent=self); return
+            self._warn("Nothing to copy", "No public key found.", parent=self); return
         self.clipboard_clear(); self.clipboard_append(pub)
-        messagebox.showinfo("Copied", "Public key copied to clipboard.", parent=self)
+        self._info("Copied", "Public key copied to clipboard.", parent=self)
 
     def _activate_key(self, fpr):
         """Switch the active key; refresh the ACTIVE KEY section in place (no page rebuild)."""
@@ -2617,9 +2631,9 @@ class App(tk.Tk):
         try:
             data = Card.export_secret(fpr) if secret else Card.export_pub(fpr)
         except Exception as e:
-            messagebox.showerror("Export error", str(e), parent=self); return
+            self._error("Export error", str(e), parent=self); return
         if not data:
-            messagebox.showwarning("Export", "Nothing to export.", parent=self); return
+            self._warn("Export", "Nothing to export.", parent=self); return
         out = filedialog.asksaveasfilename(
             parent=self, title="Save key", defaultextension=".asc",
             initialfile=("secret" if secret else "public") + ".asc",
@@ -2630,29 +2644,29 @@ class App(tk.Tk):
             with open(out, "w", encoding="utf-8") as fh:
                 fh.write(data)
         except Exception as e:
-            messagebox.showerror("Save error", str(e), parent=self); return
-        messagebox.showinfo("Exported", "Key saved.", parent=self)
+            self._error("Save error", str(e), parent=self); return
+        self._info("Exported", "Key saved.", parent=self)
 
     def _delete_key(self, fpr):
         k = next((x for x in self._secret if x["fpr"] == fpr), None)
         nm = (k.get("name") if k else "") or fpr[:16]
-        if not messagebox.askyesno("Delete key",
+        if not self._ask("Delete key",
             f"Delete {nm} (including its private key) from the GnuPG keyring?\n"
             "This cannot be undone.", parent=self):
             return
         try:
             Card.delete_secret(fpr)
         except Exception as e:
-            messagebox.showerror("Error", str(e), parent=self); return
+            self._error("Error", str(e), parent=self); return
         self._refresh()
         self._open_info()
 
     def _generate_key(self):
         name = self._gen_name.get().strip()
         if not name:
-            messagebox.showwarning("Required", "Name is required.", parent=self); return
+            self._warn("Required", "Name is required.", parent=self); return
         if not Card.available():
-            messagebox.showerror("No GnuPG", "GnuPG is required. Install Gpg4win.",
+            self._error("No GnuPG", "GnuPG is required. Install Gpg4win.",
                                  parent=self); return
         self._gen_btn.set_text("generating…"); self._gen_btn.set_enabled(False)
         self.update()
@@ -2672,7 +2686,7 @@ class App(tk.Tk):
             if t.is_alive():
                 self.after(200, poll); return
             if err[0]:
-                messagebox.showerror("Error", str(err[0]), parent=self)
+                self._error("Error", str(err[0]), parent=self)
                 self._gen_btn.set_text("generate  (rsa 4096)"); self._gen_btn.set_enabled(True)
             else:
                 self._reload_keys()
@@ -2687,13 +2701,13 @@ class App(tk.Tk):
     def _import_key(self):
         raw = self._imp_t.get("1.0", "end-1c").strip()
         if not raw or "BEGIN PGP" not in raw:
-            messagebox.showwarning("Required", "Paste an armored PGP key first.", parent=self); return
+            self._warn("Required", "Paste an armored PGP key first.", parent=self); return
         try:
             Card.import_key(raw)
         except Exception as e:
-            messagebox.showerror("Import Error", str(e), parent=self); return
+            self._error("Import Error", str(e), parent=self); return
         self._refresh()
-        messagebox.showinfo("Imported", "Key imported into the GnuPG keyring.", parent=self)
+        self._info("Imported", "Key imported into the GnuPG keyring.", parent=self)
         self._open_info()
 
     # ── keyring state (GnuPG is the source of truth, like Kleopatra) ─
@@ -2837,7 +2851,110 @@ class App(tk.Tk):
                    f"Open the keycard panel and click USE THIS CARD to {action}.")
         else:
             msg = f"You have no active key.\n\nPick or create one in Profile & Keys to {action}."
-        messagebox.showwarning("No active key", msg, parent=self)
+        self._warn("No active key", msg, parent=self)
+
+    # ── In-app dialogs (instead of separate Windows message boxes) ─
+    def _dialog(self, title, message="", buttons=(("OK", True),), tone=T1, entry=False):
+        """A modal dialog drawn INSIDE the app window: a rounded card with the app's own
+        buttons. It blocks like a message box (nested event loop) and returns
+        (value of the pressed button, typed text or None). Enter = last button,
+        Escape = first one."""
+        PAD, W_MIN = 22, 320
+        prev = self.focus_get()
+        var = tk.StringVar(value="")
+        res = {"v": buttons[0][1], "text": None}
+        cv = tk.Canvas(self, bg=BK, highlightthickness=0, bd=0, takefocus=1)
+        body = tk.Frame(cv, bg=HDR)
+        tk.Label(body, text=title, font=FB, bg=HDR, fg=tone, anchor="w").pack(fill="x")
+        if message:
+            tk.Label(body, text=message, font=FS, bg=HDR, fg=T2, justify="left", anchor="w",
+                     wraplength=360).pack(fill="x", pady=(8, 0))
+        ent = None
+        if entry:
+            ent = tk.Entry(body, font=FM, bg=INP, fg=T1, insertbackground=T1, relief="flat",
+                           highlightthickness=1, highlightbackground=DIV, highlightcolor=T3)
+            ent.pack(fill="x", pady=(12, 0), ipady=6)
+
+        def finish(v):
+            res["v"] = v
+            if ent is not None:
+                res["text"] = ent.get()
+            var.set("done")
+
+        bar = tk.Frame(body, bg=HDR)
+        bar.pack(fill="x", pady=(18, 0))
+        for label, value in reversed(buttons):          # last button = primary, rightmost
+            _make_btn(bar, label, lambda v=value: finish(v), w=84, pbg=HDR).pack(
+                side="right", padx=(8, 0))
+
+        body.update_idletasks()
+        w = max(W_MIN, body.winfo_reqwidth())
+        h = body.winfo_reqheight()
+        cv.configure(width=w + 2 * PAD, height=h + 2 * PAD)
+        cv.create_window(PAD, PAD, window=body, anchor="nw", width=w)
+        cv.bind("<Configure>", lambda _: _round_bg(cv, HDR, 14, outline=DIV))
+        cv.place(relx=0.5, rely=0.5, anchor="center")
+        tk.Misc.tkraise(cv)                              # (Canvas.lift raises items, not the widget)
+        if IS_WIN:
+            # clip the canvas to the card's rounded shape so the app shows through the
+            # corners (a canvas is rectangular — its dark corners showed as squares)
+            try:
+                import ctypes
+                cv.update_idletasks()
+                W, H = cv.winfo_width(), cv.winfo_height()
+                rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, W + 1, H + 1, 28, 28)
+                ctypes.windll.user32.SetWindowRgn(ctypes.c_void_p(cv.winfo_id()),
+                                                  ctypes.c_void_p(rgn), True)
+            except Exception:
+                pass
+
+        def key(e):
+            if e.keysym in ("Return", "KP_Enter"):
+                finish(buttons[-1][1])
+            elif e.keysym == "Escape":
+                finish(buttons[0][1])
+        for wdg in (cv, ent):
+            if wdg is not None:
+                wdg.bind("<Key>", key)
+        stack = self.__dict__.setdefault("_dialogs", [])
+        stack.append(cv)
+        try:
+            cv.grab_set()                                # the rest of the app waits
+        except Exception:
+            pass
+        (ent or cv).focus_set()
+        self.wait_variable(var)
+        stack.remove(cv)
+        try:
+            cv.grab_release()
+        except Exception:
+            pass
+        cv.destroy()
+        if stack:                                        # a dialog underneath regains the grab
+            try: stack[-1].grab_set()
+            except Exception: pass
+        try:
+            if prev is not None and prev.winfo_exists():
+                prev.focus_set()
+        except Exception:
+            pass
+        return res["v"], res["text"]
+
+    def _info(self, title, message="", **_):
+        self._dialog(title, message)
+
+    def _warn(self, title, message="", **_):
+        self._dialog(title, message, tone=AM)
+
+    def _error(self, title, message="", **_):
+        self._dialog(title, message, tone=RD)
+
+    def _ask(self, title, message="", **_):
+        return self._dialog(title, message, (("No", False), ("Yes", True)))[0]
+
+    def _ask_string(self, title, prompt="", **_):
+        ok, text = self._dialog(title, prompt, (("Cancel", False), ("OK", True)), entry=True)
+        return text if ok else None
 
     def _open_key_setup(self):
         (self._open_card if self._card_waiting() else self._open_info)()
@@ -2971,9 +3088,9 @@ class App(tk.Tk):
 
             def use_card(fpr=enc):
                 if not fpr:
-                    messagebox.showwarning("No key", "Card has no key.", parent=self); return
+                    self._warn("No key", "Card has no key.", parent=self); return
                 if not Card.export_pub(fpr):
-                    messagebox.showwarning("Public key not in keyring",
+                    self._warn("Public key not in keyring",
                         "GnuPG doesn't have this card's public key.\n"
                         "Set a key URL on the card and Fetch, or import the matching .asc.",
                         parent=self); return
@@ -2981,7 +3098,7 @@ class App(tk.Tk):
                 self._card_present = True; self._card_in_use = True
                 self._reload_keys()
                 self.my_fpr = Card.primary_fpr(fpr); self._save_config(); self._rebuild_list()
-                messagebox.showinfo("Keycard active",
+                self._info("Keycard active",
                     "This card's key is now your active signing/decryption key.", parent=self)
                 self._open_card()
 
@@ -3025,33 +3142,31 @@ class App(tk.Tk):
             if t.is_alive():
                 self.after(150, poll); return
             if err[0]:
-                messagebox.showerror("Card error", str(err[0]), parent=self)
+                self._error("Card error", str(err[0]), parent=self)
             else:
                 r = res[0]
                 rc = getattr(r, "returncode", 0)
                 out = ((getattr(r, "stderr", "") or "") + (getattr(r, "stdout", "") or "")).strip()
                 if rc not in (0, None) and ("error" in out.lower() or "failed" in out.lower()):
-                    messagebox.showerror("Card error", out[:600] or "command failed", parent=self)
+                    self._error("Card error", out[:600] or "command failed", parent=self)
                 else:
-                    messagebox.showinfo("Done", ok_msg, parent=self)
+                    self._info("Done", ok_msg, parent=self)
                 self._reload_keys(); self._rebuild_list()
             self._open_card()
 
         self.after(150, poll)
 
     def _card_name(self):
-        from tkinter import simpledialog
-        sn = simpledialog.askstring("Cardholder", "Surname:", parent=self)
+        sn = self._ask_string("Cardholder", "Surname:", parent=self)
         if sn is None:
             return
-        gn = simpledialog.askstring("Cardholder", "Given name:", parent=self)
+        gn = self._ask_string("Cardholder", "Given name:", parent=self)
         if gn is None:
             return
         self._card_action(lambda: Card.card_set_name(sn, gn), "Cardholder name set.")
 
     def _card_url(self):
-        from tkinter import simpledialog
-        url = simpledialog.askstring("Public-key URL", "URL where your public key is published:",
+        url = self._ask_string("Public-key URL", "URL where your public key is published:",
                                      parent=self)
         if not url:
             return
@@ -3060,7 +3175,7 @@ class App(tk.Tk):
     def _card_move_key(self):
         soft = [k for k in self._secret if not k.get("on_card")]
         if not soft:
-            messagebox.showwarning("No key",
+            self._warn("No key",
                 "No software secret key to move. Generate or import one first.", parent=self); return
         self._choose_secret("Move which key to the card?", lambda k: self._card_action(
             lambda: Card.keytocard(k["fpr"], "2"),
@@ -3116,15 +3231,15 @@ class App(tk.Tk):
         raw = self._ac_key.get("1.0", "end-1c").strip()
         _log(f"save_contact: raw_len={len(raw)} has_begin={'BEGIN PGP' in raw}")
         if not raw or raw == PH or "BEGIN PGP" not in raw:
-            messagebox.showwarning("Required", "Paste an armored PGP key.", parent=self); return
+            self._warn("Required", "Paste an armored PGP key.", parent=self); return
         try:
             out = Card.import_key(raw)
             _log(f"save_contact: import out={out[:120]!r}")
         except Exception as e:
             _log(f"save_contact: import EXC {e}")
-            messagebox.showerror("Import error", str(e), parent=self); return
+            self._error("Import error", str(e), parent=self); return
         self._refresh()
-        messagebox.showinfo("Imported", "Key imported into the keyring.", parent=self)
+        self._info("Imported", "Key imported into the keyring.", parent=self)
         self._welcome()
 
     # ── .asc file operations ──────────────────────────────────────
@@ -3140,16 +3255,16 @@ class App(tk.Tk):
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 raw = fh.read().strip()
         except Exception as e:
-            messagebox.showerror("Read Error", str(e), parent=self); return
+            self._error("Read Error", str(e), parent=self); return
         if not raw or "BEGIN PGP" not in raw:
-            messagebox.showerror("Not a Key",
+            self._error("Not a Key",
                 "That file doesn't contain a PGP key block.", parent=self); return
         try:
             Card.import_key(raw)
         except Exception as e:
-            messagebox.showerror("Import error", str(e), parent=self); return
+            self._error("Import error", str(e), parent=self); return
         self._refresh()
-        messagebox.showinfo("Imported", "Key imported into the GnuPG keyring.", parent=self)
+        self._info("Imported", "Key imported into the GnuPG keyring.", parent=self)
         self._welcome()
 
     def _recipients(self):
@@ -3208,7 +3323,7 @@ class App(tk.Tk):
             try:
                 out = self._sign(t)
             except Exception as e:
-                return messagebox.showerror("Sign Error", str(e), parent=self)
+                return self._error("Sign Error", str(e), parent=self)
             txt.delete("1.0", "end"); txt.insert("1.0", out); txt.configure(fg=T1)
 
         def do_encrypt():
@@ -3217,7 +3332,7 @@ class App(tk.Tk):
                 return
             fpr = opts.get(enc._var.get())
             if not fpr:
-                return messagebox.showwarning("No Recipient",
+                return self._warn("No Recipient",
                     "Pick a recipient (import a key first).", parent=self)
             if not self._has_key():                      # no key → no readable copy for you
                 return self._no_key_warning("encrypt (so you can read your own messages)")
@@ -3227,7 +3342,7 @@ class App(tk.Tk):
             try:
                 out = Card.encrypt(t, recips)            # no signing
             except Exception as e:
-                return messagebox.showerror("Encrypt Error", str(e), parent=self)
+                return self._error("Encrypt Error", str(e), parent=self)
             txt.delete("1.0", "end"); txt.insert("1.0", out); txt.configure(fg=T1)
 
         def save_out():
@@ -3240,9 +3355,9 @@ class App(tk.Tk):
             if out:
                 try:
                     open(out, "w", encoding="utf-8").write(t)
-                    messagebox.showinfo("Saved", "File saved.", parent=self)
+                    self._info("Saved", "File saved.", parent=self)
                 except Exception as e:
-                    messagebox.showerror("Save Error", str(e), parent=self)
+                    self._error("Save Error", str(e), parent=self)
 
         def copy_out():
             t = body()
@@ -3284,7 +3399,7 @@ class App(tk.Tk):
             if not raw or raw == PH:
                 return
             if "BEGIN PGP" not in raw:
-                return messagebox.showerror("Not PGP",
+                return self._error("Not PGP",
                     "Paste a PGP encrypted or signed message.", parent=self)
             if "BEGIN PGP MESSAGE" in raw and not self._has_key():
                 self._no_key_warning("decrypt")
@@ -3292,7 +3407,7 @@ class App(tk.Tk):
             try:
                 text, signer = self._decrypt(raw)   # gpg verifies against the keyring
             except Exception as e:
-                return messagebox.showerror("Decrypt Error", str(e), parent=self)
+                return self._error("Decrypt Error", str(e), parent=self)
             txt.delete("1.0", "end"); txt.insert("1.0", text); txt.configure(fg=T1)
             if signer:
                 vi = self._asset_img("valid.png", 16, tint=GN)
@@ -3405,12 +3520,12 @@ class App(tk.Tk):
         nm = contact.get("name") or contact.get("keyid", "this key")
         msg = (f"Delete {nm} (including its private key) from the keyring?"
                if secret else f"Remove {nm} from the keyring?")
-        if not messagebox.askyesno("Delete key", msg + "\nThis cannot be undone.", parent=self):
+        if not self._ask("Delete key", msg + "\nThis cannot be undone.", parent=self):
             return
         try:
             (Card.delete_secret if secret else Card.delete_pub)(contact["fpr"])
         except Exception as e:
-            messagebox.showerror("Error", str(e), parent=self); return
+            self._error("Error", str(e), parent=self); return
         self.active = None
         self._refresh()
         self._welcome()
@@ -3421,7 +3536,7 @@ class App(tk.Tk):
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 data = fh.read()
         except Exception as e:
-            messagebox.showerror("Read Error", str(e), parent=self); return
+            self._error("Read Error", str(e), parent=self); return
         textw.delete("1.0", "end"); textw.insert("1.0", data); textw.configure(fg=T1)
 
     # ── Native file drag-and-drop onto the message fields ─────────
@@ -4093,6 +4208,37 @@ class App(tk.Tk):
                 r["visible"] = False
         _log(f"apply_filter: q={q!r} visible="
              f"{sum(1 for r in self._rows if r['visible'])}/{len(self._rows)}")
+        self._fade_rows()
+
+    # ── Soft fade at the bottom of the contact list (just above the toolbar) ──
+    # Tk can't draw a translucent overlay over widgets, but the list background is flat,
+    # so fading the visible parts (text, separators) toward the background by how far
+    # into the bottom band they sit reads as a gradient.
+    _FADE_PX, _FADE_MAX = 40, 0.8
+
+    def _fade_rows(self):
+        if getattr(self, "_fade_job", None) is None:     # coalesce: once per idle pass
+            self._fade_job = self.after_idle(self._fade_rows_now)
+
+    def _fade_rows_now(self):
+        self._fade_job = None
+        sf = getattr(self, "_clist_sf", None)
+        if sf is None or not sf.winfo_exists() or sf.winfo_height() <= 1:
+            return
+        start = sf.winfo_rooty() + sf.winfo_height() - self._FADE_PX
+        for r in getattr(self, "_rows", []):
+            if not r["visible"]:
+                continue
+            for w, opt, base, to in r["fade"]:
+                try:
+                    y = w.winfo_rooty() + w.winfo_height() / 2
+                    t = min(1.0, max(0.0, (y - start) / self._FADE_PX)) * self._FADE_MAX
+                    col = _mix_hex(base, to, t)
+                    if getattr(w, "_fade_col", None) != col:
+                        w.configure(**{opt: col})
+                        w._fade_col = col
+                except Exception:
+                    pass
 
     def _contact_row(self, idx, contact):
         active = (idx == self.active)
@@ -4130,35 +4276,44 @@ class App(tk.Tk):
         # clipped instead of pushing the icon out
         side = tk.Frame(row, bg=rbg)
         side.pack(side="right", padx=(0, 12), before=mid)
+        # rec["idx"] follows the contact when the list is reordered (no rebuild), so the
+        # callbacks below read it at event time instead of capturing a fixed index
         ib = _icon_widget(side, 18, "info",
-                          lambda i=idx, c=contact: (self._highlight_active(i),
-                                                    self._show_contact_key(c)),
+                          lambda c=contact: (self._highlight_active(rec["idx"]),
+                                             self._show_contact_key(c)),
                           fg=T4, hover=T1, pbg=rbg, tip="Key info")
         ib.pack()
 
-        tk.Frame(holder, bg=DIV, height=1).pack(fill="x")
+        sep = tk.Frame(holder, bg=DIV, height=1)
+        sep.pack(fill="x")
 
         widgets = [row, mid, nl, side, ib] + ([sl] if sl else []) + ([badge] if badge else [])
+        # parts that dim near the list's bottom edge: (widget, option, normal colour, fade-to)
+        fade = [(nl, "fg", T1, SB), (sep, "bg", DIV, SBG)] + \
+               ([(sl, "fg", T3, SB)] if sl else []) + ([(badge, "fg", st[1], SB)] if badge else [])
         hay = " ".join([contact.get("name", ""), contact.get("email", ""),
                         contact.get("keyid", ""), contact.get("fpr", "")]).lower()
         fpr = contact.get("fpr")
-        self._rows.append({"idx": idx, "holder": holder, "row": row, "fpr": fpr,
-                           "hay": hay, "visible": True, "widgets": widgets})
+        rec = {"idx": idx, "holder": holder, "row": row, "fpr": fpr,
+               "hay": hay, "visible": True, "widgets": widgets, "fade": fade}
+        self._rows.append(rec)
 
         def enter(_):
-            if self.active != idx and getattr(self, "_drag", None) is None:
+            if self.active != rec["idx"] and getattr(self, "_drag", None) is None:
                 for w in widgets:
                     try: w.configure(bg=HOV)
                     except Exception: pass
 
         def leave(_):
-            if self.active != idx and getattr(self, "_drag", None) is None:
+            if self.active != rec["idx"] and getattr(self, "_drag", None) is None:
                 for w in widgets:
                     try: w.configure(bg=SB)
                     except Exception: pass
 
-        # click to open · press-and-drag to reorder (a small threshold tells them apart)
-        for w in [row, mid, nl]:
+        # click to open · press-and-drag to reorder (a small threshold tells them apart).
+        # Bound on EVERY part of the row except the info icon — the second line (email /
+        # key id) and the badge used to be dead, so the bottom half ignored clicks.
+        for w in [row, mid, nl, side] + ([sl] if sl else []) + ([badge] if badge else []):
             w.bind("<ButtonPress-1>",   lambda e, f=fpr: self._row_press(e, f))
             w.bind("<B1-Motion>",       lambda e, f=fpr: self._row_motion(e, f))
             w.bind("<ButtonRelease-1>", lambda e, f=fpr: self._row_release(e, f))
@@ -4227,7 +4382,7 @@ class App(tk.Tk):
         self._drag = None
         if not d:
             return
-        for k in ("ghost", "gap"):
+        for k in ("ghost", "old_gap"):
             w = d.get(k)
             if w is not None:
                 try: w.destroy()
@@ -4235,10 +4390,21 @@ class App(tk.Tk):
         if not d["moved"]:                           # a plain click → open the chat
             idx = self._contact_index_by_fpr(fpr)
             if idx is not None:
-                self._show(("chat", idx), lambda i=idx: self._open(i))
+                self._show(("chat", fpr), lambda i=idx: self._open(i))
             return
+        # drop the row exactly where the gap is (the other rows are already in their
+        # final places), in one layout pass — no list rebuild, no window repaint
+        gap, h = d.get("gap"), d["holder"]
+        try:
+            if gap is not None and gap.winfo_exists():
+                h.pack(fill="x", before=gap)
+                gap.destroy()
+            else:
+                h.pack(fill="x")
+        except Exception:
+            pass
         self._commit_reorder(fpr, d.get("gap_idx"))
-        self.after(30, self._force_repaint)          # wipe any leftover drag trails
+        self._fade_rows()
 
     def _make_drag_ghost(self, holder, fpr, height, x, y, width):
         """A floating copy of the row that tracks the cursor while dragging.
@@ -4278,7 +4444,7 @@ class App(tk.Tk):
             pass
         return g
 
-    # ── The make-room gap: an empty slot that smoothly opens where the row would drop ──
+    # ── The make-room gap: an empty slot that glides to where the row would drop ──
     def _insert_gap(self, rows, idx, H, animate=True):
         gap = tk.Frame(self._clist, bg=SBG, height=(1 if animate else H))
         try:
@@ -4288,35 +4454,34 @@ class App(tk.Tk):
                 gap.pack(fill="x")
         except Exception:
             gap.pack(fill="x")
-        if animate:
-            self._grow_gap(gap, H)
         return gap
 
-    def _grow_gap(self, gap, H, step=0):
-        steps = 5
-        if not gap.winfo_exists():
+    def _glide_gap(self, d, old, new, step=0, steps=5):
+        """Close the old slot and open the new one in LOCKSTEP — both heights change in
+        the same tick and always add up to one row, so the list's total height never
+        changes and only the rows between the two slots move (the old separate grow /
+        collapse timers made everything below jitter = the whole list flickered)."""
+        if d is not getattr(self, "_drag", None) or not new.winfo_exists():
             return
-        gap.configure(height=max(1, int(H * (step + 1) / steps)))
-        if step + 1 < steps:
-            self.after(15, lambda: self._grow_gap(gap, H, step + 1))
-
-    def _collapse_gap(self, gap, H, step=0):
-        steps = 5
-        if not gap.winfo_exists():
-            return
-        h = int(H * (steps - step - 1) / steps)
-        if h <= 1 or step + 1 >= steps:
-            try: gap.destroy()
-            except Exception: pass
-            return
-        gap.configure(height=h)
-        self.after(15, lambda: self._collapse_gap(gap, H, step + 1))
+        H = d["gh"]
+        grown = min(H, max(1, round(H * (step + 1) / steps)))
+        new.configure(height=grown)
+        self._fade_rows()                            # rows slid — keep the bottom fade right
+        if old is not None and old.winfo_exists():
+            if grown >= H:
+                old.destroy()
+            else:
+                old.configure(height=H - grown)
+        if grown < H:
+            d["gliding"] = self.after(15, lambda: self._glide_gap(d, old, new, step + 1, steps))
+        else:
+            d["gliding"] = None
+            d["old_gap"] = None
 
     def _update_gap(self, d, y_root):
         """While dragging: if the cursor crossed into a new slot, glide the gap there —
         the neighbouring rows smoothly move down/up to show where the drop will land."""
-        gap = d.get("gap")
-        if gap is not None and gap.winfo_exists() and gap.winfo_height() < d["gh"] - 1:
+        if d.get("gliding"):
             return                                   # still gliding — settle before re-deciding
         rows = self._drag_rows(d["fpr"])
         idx = len(rows)
@@ -4330,12 +4495,16 @@ class App(tk.Tk):
             return
         d["gap_idx"] = idx
         old = d.get("gap")
+        new = self._insert_gap(rows, idx, d["gh"])   # opens at 1px…
         if old is not None:
-            self._collapse_gap(old, d["gh"])         # old slot closes…
-        d["gap"] = self._insert_gap(rows, idx, d["gh"])  # …new slot opens
+            old.configure(height=d["gh"] - 1)        # …while the old one gives up that 1px
+        d["gap"], d["old_gap"] = new, old
+        self._glide_gap(d, old, new)
 
     def _commit_reorder(self, fpr, idx):
-        """Drop the dragged contact at slot `idx` (where the gap is); persist; rebuild once."""
+        """Drop the dragged contact at slot `idx` (where the gap was); persist. The row
+        widgets were already re-packed in place by _row_release — only the data and each
+        row's index are updated here (a full rebuild made the whole list flash)."""
         active_fpr = None
         if isinstance(self.active, int) and 0 <= self.active < len(self.contacts):
             active_fpr = self.contacts[self.active].get("fpr")
@@ -4354,7 +4523,10 @@ class App(tk.Tk):
         self._cfg_set("contact_order", [c.get("fpr") for c in self.contacts])
         if active_fpr is not None:
             self.active = self._contact_index_by_fpr(active_fpr)
-        self._rebuild_list()
+        pos = {c.get("fpr"): i for i, c in enumerate(self.contacts)}
+        for r in self._rows:
+            r["idx"] = pos.get(r["fpr"], r["idx"])
+        self._rows.sort(key=lambda r: r["idx"])      # _apply_filter re-packs in this order
 
     def _highlight_active(self, new_idx):
         """Move the selection highlight in place — no list rebuild, no flicker."""
@@ -4369,7 +4541,7 @@ class App(tk.Tk):
     def _open(self, idx):
         self._highlight_active(idx)     # in-place; sidebar is not rebuilt
         self._build_chat(idx)
-        self._view = ("chat", idx)
+        self._view = ("chat", self.contacts[idx].get("fpr"))   # by key: survives reordering
 
     def _build_chat(self, idx):
         self._clear_main()
@@ -4405,7 +4577,10 @@ class App(tk.Tk):
         # (encryption always also targets your own key so you can re-open sent messages)
         br = tk.Frame(self._main, bg=BK)
         br.pack(fill="x", padx=16, pady=(10, 12))    # bottom in line with the toolbar icons
-        _make_btn(br, "Encrypt", lambda: self._encrypt_zone(idx), w=130,
+        # resolve the contact by fingerprint at click time — its list index changes when
+        # the contacts are reordered while this chat is open
+        _make_btn(br, "Encrypt",
+                  lambda f=c.get("fpr"): self._encrypt_zone(self._contact_index_by_fpr(f)), w=130,
                   icon=_icon_full("lock", 16, T2)).pack(side="left")
         _make_btn(br, "Decrypt", self._decrypt_zone, w=130,
                   icon=_icon_full("unlock", 16, T2)).pack(side="left", padx=(8, 0))
@@ -4436,11 +4611,11 @@ class App(tk.Tk):
 
     def _encrypt_zone(self, idx):
         text = self._zone_text()
-        if not text:
+        if not text or idx is None:
             return
         fpr = self.contacts[idx].get("fpr")
         if not fpr:
-            messagebox.showerror("No Key", "This entry has no key.", parent=self); return
+            self._error("No Key", "This entry has no key.", parent=self); return
         if not self._has_key():                      # no key → no readable copy for you
             return self._no_key_warning("encrypt (so you can read your own messages)")
         recips = [fpr]
@@ -4449,7 +4624,7 @@ class App(tk.Tk):
         try:
             enc = Card.encrypt(text, recips)         # no signing
         except Exception as e:
-            messagebox.showerror("Encryption Error", str(e), parent=self); return
+            self._error("Encryption Error", str(e), parent=self); return
         self._zone_set(enc)
         self._set_chat_status("")
 
@@ -4460,12 +4635,12 @@ class App(tk.Tk):
         if not raw:
             return
         if "-----BEGIN PGP MESSAGE-----" not in raw:
-            messagebox.showwarning("Not PGP",
+            self._warn("Not PGP",
                 "Paste a PGP encrypted message block to decrypt.", parent=self); return
         try:
             plain, signer = self._decrypt(raw)
         except Exception as e:
-            messagebox.showerror("Decryption Error", str(e), parent=self); return
+            self._error("Decryption Error", str(e), parent=self); return
         self._zone_set(plain)
         self._set_chat_status("")            # messages aren't signed anymore
 
