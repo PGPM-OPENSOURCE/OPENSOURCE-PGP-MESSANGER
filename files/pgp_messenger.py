@@ -132,6 +132,9 @@ _CUSTOM_PNG = {
                    os.path.join(_DESKTOP, "delete contact still.png")),
     "lock":    (os.path.join(_DATA, "lock.png"),      os.path.join(_DESKTOP, "encrypt small.png")),
     "generate": (os.path.join(_DATA, "generate.png"), os.path.join(_DESKTOP, "generate button.png")),
+    "nick":    (os.path.join(_DATA, "nickname.png"),  os.path.join(_DESKTOP, "add nickname.png")),
+    "nick_hover": (os.path.join(_DATA, "nickname-hover.png"),
+                   os.path.join(_DESKTOP, "add nickname hover.png")),
     "import_in": (os.path.join(_DATA, "import.png"),  os.path.join(_DESKTOP, "import button.png")),
     "unlock":  (os.path.join(_DATA, "lock-open.png"), os.path.join(_DESKTOP, "decrypt small.png")),
 }
@@ -863,7 +866,7 @@ RAD_WIN = 24  # corner diameter for the app window (≈12px radius, Win11-like)
 APP_W = 920
 APP_H = 540
 
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 GITHUB_REPO = "PGPM-OPENSOURCE/OPENSOURCE-PGP-MESSANGER"
 
 def _pill_label(cv, cx, text, font, img, fill=WT):
@@ -1528,6 +1531,7 @@ _PIL_ICONS = {"search": _pil_search, "plus": _pil_plus,
               "more": _pil_more, "info": _pil_info, "profile": _pil_profile, "check": _pil_check,
               "back": _pil_back, "chevron": _pil_chevron, "chevdown": _pil_chevron,
               "keycard": _pil_keycard, "usbkey": _pil_keycard, "copy": _pil_copy,
+              "nick": _pil_more,                     # fallback if the wrench PNG is missing
               "shuffle": _pil_shuffle,
               "encrypt": _pil_sign}   # fallback if Desktop\encrypt.png is missing
 
@@ -1602,6 +1606,37 @@ def _custom_alpha(kind):
             except Exception:
                 pass
     return None
+
+
+def _png_img(kind):
+    """A custom icon PNG shown in its OWN colours (no tint) at its own size; None if
+    missing. For icons whose normal / hover looks are drawn by the owner."""
+    ck = ("png", kind)
+    if ck not in _CUSTOM_ICONS:
+        img = None
+        entry = _CUSTOM_PNG.get(kind)
+        for path in ((entry[0], _resource(os.path.basename(entry[0]))) if entry else ()):
+            if path and os.path.exists(path):
+                try:
+                    img = ImageTk.PhotoImage(Image.open(path).convert("RGBA"))
+                    break
+                except Exception:
+                    img = None
+        _CUSTOM_ICONS[ck] = img
+    return _CUSTOM_ICONS[ck]
+
+
+def _image_button(parent, img_n, img_h, command, pbg=None, tip=None):
+    """Icon button that swaps between two ready-made images on hover."""
+    pbg = pbg or parent.cget("bg")
+    lbl = tk.Label(parent, image=img_n, bg=pbg, cursor="hand2", bd=0)
+    lbl._imgs = (img_n, img_h)                  # keep refs from GC
+    lbl.bind("<Button-1>", lambda _: command())
+    lbl.bind("<Enter>", lambda _: lbl.configure(image=img_h))
+    lbl.bind("<Leave>", lambda _: lbl.configure(image=img_n))
+    if tip:
+        _attach_tip(lbl, tip)
+    return lbl
 
 
 def _icon_full(kind, size, color):
@@ -2854,7 +2889,8 @@ class App(tk.Tk):
         self._warn("No active key", msg, parent=self)
 
     # ── In-app dialogs (instead of separate Windows message boxes) ─
-    def _dialog(self, title, message="", buttons=(("OK", True),), tone=T1, entry=False):
+    def _dialog(self, title, message="", buttons=(("OK", True),), tone=T1, entry=False,
+                entry_text=""):
         """A modal dialog drawn INSIDE the app window: a rounded card with the app's own
         buttons. It blocks like a message box (nested event loop) and returns
         (value of the pressed button, typed text or None). Enter = last button,
@@ -2874,6 +2910,9 @@ class App(tk.Tk):
             ent = tk.Entry(body, font=FM, bg=INP, fg=T1, insertbackground=T1, relief="flat",
                            highlightthickness=1, highlightbackground=DIV, highlightcolor=T3)
             ent.pack(fill="x", pady=(12, 0), ipady=6)
+            if entry_text:
+                ent.insert(0, entry_text)
+                ent.select_range(0, "end")              # typing replaces it
 
         def finish(v):
             res["v"] = v
@@ -2952,9 +2991,68 @@ class App(tk.Tk):
     def _ask(self, title, message="", **_):
         return self._dialog(title, message, (("No", False), ("Yes", True)))[0]
 
-    def _ask_string(self, title, prompt="", **_):
-        ok, text = self._dialog(title, prompt, (("Cancel", False), ("OK", True)), entry=True)
+    def _ask_string(self, title, prompt="", initial="", **_):
+        ok, text = self._dialog(title, prompt, (("Cancel", False), ("OK", True)), entry=True,
+                                entry_text=initial)
         return text if ok else None
+
+    # ── Contact nicknames (local only: stored in PGPM's config by fingerprint — the key
+    #    in the GnuPG keyring is never changed) ─────────────────────
+    def _nick(self, fpr):
+        return (self._cfg_get("nicknames", {}) or {}).get(fpr or "", "")
+
+    def _shown_name(self, c):
+        """What the contacts list shows: the nickname if set, else the key's own name."""
+        return (self._nick(c.get("fpr")) or c.get("name") or c.get("email")
+                or c.get("keyid", "")[:16])
+
+    def _set_nick(self, fpr, nick):
+        d = dict(self._cfg_get("nicknames", {}) or {})
+        if nick:
+            d[fpr] = nick
+        else:
+            d.pop(fpr, None)
+        self._cfg_set("nicknames", d)
+        rec = self._row_by_fpr(fpr)                  # update that contact row in place
+        c = next((x for x in self.contacts if x.get("fpr") == fpr), None)
+        if rec and c:
+            name = self._shown_name(c) + ("  (you)" if c.get("secret") else "")
+            try: rec["widgets"][2].configure(text=name)
+            except Exception: pass
+            rec["hay"] = " ".join([nick, c.get("name", ""), c.get("email", ""),
+                                   c.get("keyid", ""), c.get("fpr", "")]).lower()
+
+    def _name_with_nick(self, e, contact):
+        """Key info's Name row: the key's own name first, then "(nickname)", with the
+        set-nickname button right after the text."""
+        fpr = contact.get("fpr", "")
+        base = contact.get("name") or "—"
+
+        def show():
+            nick = self._nick(fpr)
+            txt = f"{base} ({nick})" if nick else base
+            e.configure(state="normal")
+            e.delete(0, "end")
+            e.insert(0, txt)
+            e.configure(state="readonly", width=len(txt) + 1)   # monospace → hugs the text
+
+        def edit():
+            new = self._ask_string("Nickname",
+                                   f"A nickname for {base}, shown in your contacts. "
+                                   "Leave it empty to remove it.", initial=self._nick(fpr))
+            if new is None:
+                return
+            self._set_nick(fpr, new.strip())
+            show()
+
+        e.pack_configure(fill="none", expand=False)
+        n_img, h_img = (_png_img("nick"), _png_img("nick_hover")) if _HAS_PIL else (None, None)
+        if n_img is not None and h_img is not None:      # the owner's own normal / hover art
+            btn = _image_button(e.master, n_img, h_img, edit, tip="Set nickname")
+        else:
+            btn = _icon_widget(e.master, 16, "nick", edit, fg=T3, hover=T1, tip="Set nickname")
+        btn.pack(side="left", padx=(4, 0))
+        show()
 
     def _open_key_setup(self):
         (self._open_card if self._card_waiting() else self._open_info)()
@@ -3016,11 +3114,23 @@ class App(tk.Tk):
             pass
         if getattr(self, "_view", None) == "info":
             self._open_info()        # flicker-free off-screen swap
+        elif getattr(self, "_view", None) == "card":
+            self._open_card()        # in-use card pulled out → its details disappear
 
     # ── Smartcard / Keycard panel (Nitrokey · YubiKey via GnuPG) ──
     def _open_card(self):
         self._clear_main()
         self._view = "card"
+        if Card.available():
+            # note pinned to the bottom, centred, at half strength (Tk text has no alpha,
+            # so the colour is mixed 50% into the background — same look on a flat bg)
+            tk.Label(self._main, font=(UI, 8), bg=BK, fg=_mix_hex(T2, BK, 0.5),
+                     justify="center", wraplength=560,
+                     text="Use an OpenPGP smartcard through GnuPG. The private key stays on the "
+                          "card; signing and decryption happen on the card (PIN via GnuPG's "
+                          "pinentry dialog).\nOnly Nitrokey has been tested so far; other "
+                          "smartcards may not work at the moment.").pack(
+                side="bottom", fill="x", padx=20, pady=(8, 14))
         scroll = ScrollFrame(self._main, bg=BK)
         scroll.pack(fill="both", expand=True)
         f = scroll.inner
@@ -3034,24 +3144,49 @@ class App(tk.Tk):
                      bg=BK, fg=T3).pack(anchor="w", padx=20, pady=(2, 0))
             return
 
-        tk.Label(f, text="Use a Nitrokey / YubiKey OpenPGP card via GnuPG. The private key stays "
-                         "on the device; signing and decryption happen on-card (PIN via GnuPG's "
-                         "pinentry dialog).",
-                 font=FS, bg=BK, fg=T2, wraplength=520, justify="left").pack(
-                 anchor="w", padx=20, pady=(18, 0))
-
         body = tk.Frame(f, bg=BK)
-        body.pack(fill="x", padx=20, pady=(10, 0))
+        body.pack(fill="x", padx=20, pady=(18, 0))
+
+        # buttons on a FULL, even grid: same width for every button in the grid, the same
+        # gap between buttons and rows, and a column count that fills every row
+        # (9 buttons → 3 × 3, 8 → 2 × 4) while the longest label keeps comfortable room
+        import tkinter.font as _tkf
+        GAP = 8
+        mw = self._main_host.winfo_width()
+        CW = (mw if mw > 1 else APP_W - 221) - 40            # content width of the panel
+        BW = max(185, min(240, (CW - 2 * GAP) // 3))         # lone Detect button (no card)
+        f_reg, f_bold = _tkf.Font(font=(UI, 9)), _tkf.Font(font=(UI, 9, "bold"))
+
+        def grid_cols(items):
+            need = max((f_bold if b else f_reg).measure(l.upper()) for l, _, b in items) + 32
+            for c in (3, 4, 2):
+                w = (CW - (c - 1) * GAP) // c
+                if len(items) % c == 0 and w >= need:
+                    return c, w
+            return 3, (CW - 2 * GAP) // 3
 
         def actbar(parent):
-            r = tk.Frame(parent, bg=BK); r.pack(anchor="w", pady=(8, 0)); return r
+            r = tk.Frame(parent, bg=BK); r.pack(anchor="w", pady=(GAP, 0)); return r
 
-        def detect():
+        def btn_row(w, *items):
+            r = actbar(body)
+            for i, (label, cmd, bold) in enumerate(items):
+                _make_btn(r, label, cmd, w=w, pbg=BK, bold=bold).pack(
+                    side="left", padx=(0 if i == 0 else GAP, 0))
+
+        def in_use(info):
+            """This exact card (by serial) is the one the user clicked USE THIS CARD on."""
+            return bool(self._card_in_use and info.get("present")
+                        and info.get("serial") == getattr(self, "_card_serial", None))
+
+        def detect(quiet=False):
             # show "detecting…" then probe gpg in a worker thread, so the UI thread
             # never freezes (a blocking Card.status() left a ghost of this button).
-            for w in body.winfo_children():
-                w.destroy()
-            tk.Label(body, text="detecting…", font=FS, bg=BK, fg=T3).pack(anchor="w")
+            # quiet: keep what's shown and only redraw if the card's details changed.
+            if not quiet:
+                for w in body.winfo_children():
+                    w.destroy()
+                tk.Label(body, text="detecting…", font=FS, bg=BK, fg=T3).pack(anchor="w")
             res = [None]
 
             def worker():
@@ -3066,18 +3201,24 @@ class App(tk.Tk):
                     return                       # panel was navigated away
                 if t.is_alive():
                     self.after(150, poll); return
-                render(res[0] or {"present": False})
+                info = res[0] or {"present": False}
+                if quiet and info == getattr(self, "_card_info", None):
+                    return                       # nothing changed — no redraw
+                render(info)
             self.after(150, poll)
 
         def render(info):
             for w in body.winfo_children():
                 w.destroy()
+            using = in_use(info)
+            if info.get("present"):
+                self._card_info = info               # shown instantly next time while in use
             if not info.get("present"):
-                tk.Label(body, text="No OpenPGP card detected.", font=(UI, 9, "bold"),
-                         bg=BK, fg=RD).pack(anchor="w")
-                tk.Label(body, text="Insert your Nitrokey / YubiKey and click Detect again.",
-                         font=FS, bg=BK, fg=T2).pack(anchor="w", pady=(2, 0))
+                tk.Label(body, text="Insert your smartcard", font=(UI, 9, "bold"),
+                         bg=BK, fg=T1).pack(anchor="w")
+                detect_btn.pack(anchor="w", padx=20, pady=(GAP, 0), after=body)   # lone Detect below
                 return
+            detect_btn.pack_forget()                 # Detect joins the button grid instead
             for lbl, key in (("Cardholder", "name"), ("Serial", "serial"),
                              ("Version", "version"), ("Reader", "reader"),
                              ("Signature key", "sig_fpr"), ("Encryption key", "enc_fpr"),
@@ -3096,37 +3237,42 @@ class App(tk.Tk):
                         parent=self); return
                 # the card reports its (sub)key fprs; the app tracks keys by primary fpr
                 self._card_present = True; self._card_in_use = True
+                self._card_serial = info.get("serial")
                 self._reload_keys()
                 self.my_fpr = Card.primary_fpr(fpr); self._save_config(); self._rebuild_list()
                 self._info("Keycard active",
                     "This card's key is now your active signing/decryption key.", parent=self)
                 self._open_card()
 
-            r1 = actbar(body)
-            _make_btn(r1, "Use this card", use_card, w=130, pbg=BK, bold=True).pack(side="left")
-            _make_btn(r1, "Move key to card", self._card_move_key, w=150, pbg=BK).pack(
-                side="left", padx=(8, 0))
-            r2 = actbar(body)
-            _make_btn(r2, "Change PIN", lambda: self._card_action(
-                lambda: Card.card_change_pin("1"), "PIN updated."), w=110, pbg=BK).pack(side="left")
-            _make_btn(r2, "Admin PIN", lambda: self._card_action(
-                lambda: Card.card_change_pin("3"), "Admin PIN updated."), w=104, pbg=BK).pack(
-                side="left", padx=(8, 0))
-            _make_btn(r2, "Unblock PIN", lambda: self._card_action(
-                lambda: Card.card_change_pin("2"), "PIN unblocked."), w=114, pbg=BK).pack(
-                side="left", padx=(8, 0))
-            r3 = actbar(body)
-            _make_btn(r3, "Set name", self._card_name, w=100, pbg=BK).pack(side="left")
-            _make_btn(r3, "Set key URL", self._card_url, w=110, pbg=BK).pack(side="left", padx=(8, 0))
-            _make_btn(r3, "Fetch key", lambda: self._card_action(
-                lambda: Card.card_fetch(), "Fetched public key from URL."), w=100, pbg=BK).pack(
-                side="left", padx=(8, 0))
+            # one fixed order, Detect always last; already in use → no USE THIS CARD
+            items = ([("Use this card", use_card, True)] if not using else []) + [
+                ("Move key to card", self._card_move_key, False),
+                ("Change PIN", lambda: self._card_action(
+                    lambda: Card.card_change_pin("1"), "PIN updated."), False),
+                ("Admin PIN", lambda: self._card_action(
+                    lambda: Card.card_change_pin("3"), "Admin PIN updated."), False),
+                ("Unblock PIN", lambda: self._card_action(
+                    lambda: Card.card_change_pin("2"), "PIN unblocked."), False),
+                ("Set name", self._card_name, False),
+                ("Set key URL", self._card_url, False),
+                ("Fetch key", lambda: self._card_action(
+                    lambda: Card.card_fetch(), "Fetched public key from URL."), False),
+                ("Detect another card" if using else "Detect card", detect, True)]
+            cols, w = grid_cols(items)
+            for i in range(0, len(items), cols):
+                btn_row(w, *items[i:i + cols])
 
-        tk.Frame(f, bg=BK, height=6).pack()
-        _make_btn(f, "Detect card", detect, w=140, pbg=BK, bold=True).pack(
-            anchor="w", padx=20, pady=(6, 0))
+        cached = getattr(self, "_card_info", None)
+        showing = bool(cached and self._card_present is True and in_use(cached))
+        # the lone Detect button (no card shown yet); once a card is shown it's in the grid
+        detect_btn = _make_btn(f, "Detect card", detect, w=BW, pbg=BK, bold=True)
+        if not showing:
+            detect_btn.pack(anchor="w", padx=20, pady=(GAP, 0), after=body)
         tk.Frame(f, bg=BK, height=16).pack()
         scroll.scroll_top()
+        if showing:                       # card in use → details + options straight away,
+            render(cached)                # then a silent re-check in case anything changed
+            detect(quiet=True)
 
     def _card_action(self, fn, ok_msg):
         """Run a card command (which may pop gpg's pinentry) off the UI thread."""
@@ -3272,7 +3418,7 @@ class App(tk.Tk):
         the default pick is a person — the Encrypt button doesn't show who it is)."""
         opts = {}
         for c in self.contacts:
-            label = c.get("name") or c.get("email") or c.get("keyid", "")
+            label = self._shown_name(c)
             if c.get("secret"):
                 label += "  (me)"
             if label and label not in opts:
@@ -3468,7 +3614,7 @@ class App(tk.Tk):
         f = tk.Frame(self._main, bg=BK)
         f.pack(fill="both", expand=True, padx=24, pady=12)
 
-        for label, val in [("Name", contact.get("name", "")),
+        for label, val in [("Name", contact.get("name") or "—"),
                             ("Email", contact.get("email", "")),
                             ("Key ID", contact.get("keyid", "")),
                             ("Created", contact["created"].strftime("%Y-%m-%d")
@@ -3477,7 +3623,9 @@ class App(tk.Tk):
                              if contact.get("expires") else "never"),
                             ("Fingerprint", contact.get("fpr", ""))]:
             if val:
-                _kv_row(f, label, val)
+                e = _kv_row(f, label, val)
+                if label == "Name":
+                    self._name_with_nick(e, contact)     # "name (nickname)" + set-nickname
 
         st = self._key_status(contact)         # expired / expires-soon badge
         if st:
@@ -4252,7 +4400,7 @@ class App(tk.Tk):
         mid = tk.Frame(row, bg=rbg)
         mid.pack(side="left", fill="x", expand=True, padx=14, pady=10)
 
-        nm = contact.get("name") or contact.get("email") or contact.get("keyid", "")[:16]
+        nm = self._shown_name(contact)              # nickname if one is set
         if contact.get("secret"):
             nm += "  (you)"
         nl = tk.Label(mid, text=nm, font=FB,
@@ -4291,7 +4439,8 @@ class App(tk.Tk):
         # parts that dim near the list's bottom edge: (widget, option, normal colour, fade-to)
         fade = [(nl, "fg", T1, SB), (sep, "bg", DIV, SBG)] + \
                ([(sl, "fg", T3, SB)] if sl else []) + ([(badge, "fg", st[1], SB)] if badge else [])
-        hay = " ".join([contact.get("name", ""), contact.get("email", ""),
+        hay = " ".join([self._nick(contact.get("fpr")), contact.get("name", ""),
+                        contact.get("email", ""),
                         contact.get("keyid", ""), contact.get("fpr", "")]).lower()
         fpr = contact.get("fpr")
         rec = {"idx": idx, "holder": holder, "row": row, "fpr": fpr,
@@ -4417,7 +4566,7 @@ class App(tk.Tk):
         c = next((c for c in self.contacts if c.get("fpr") == fpr), None)
         if c is None:
             return None
-        name = c.get("name") or c.get("email") or (c.get("keyid", "")[:16]) or "key"
+        name = self._shown_name(c) or "key"
         sub = c.get("email") or ((c.get("keyid", "")[:16] + "…") if c.get("keyid") else "")
         LB = "#242424"
         g = tk.Toplevel(self)
@@ -4546,7 +4695,7 @@ class App(tk.Tk):
     def _build_chat(self, idx):
         self._clear_main()
         c = self.contacts[idx]
-        nm = c.get("name") or c.get("email") or c.get("keyid", "Key")
+        nm = self._shown_name(c) or "Key"
 
         # Typing zone fills the panel (no header — key info lives on the contact row); same
         # box geometry as the Sign / Decrypt / Import panels
