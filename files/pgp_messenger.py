@@ -15,7 +15,7 @@ from pgpy.constants import (
 )
 
 try:
-    from PIL import Image, ImageChops, ImageDraw, ImageStat, ImageTk
+    from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageStat, ImageTk
     _HAS_PIL = True
 except Exception:
     _HAS_PIL = False
@@ -23,6 +23,7 @@ except Exception:
 # Windows gets custom borderless chrome (rounded corners, custom title bar via
 # ctypes/DWM); macOS and Linux fall back to a normal native-decorated window.
 IS_WIN = (os.name == "nt")
+IS_MAC = (sys.platform == "darwin")
 
 _INSTANCE_MUTEX = None
 def _acquire_single_instance():
@@ -98,11 +99,21 @@ WT    = "#ffffff"   # white (active-key border)
 
 UI  = "Microsoft JhengHei"                           # per request
 MON = "Consolas"
-FM   = (UI, 10)
-FB   = (UI, 10, "bold")
-FS   = (UI, 9)
-FMO  = (MON, 9)
-FBUB = (UI, 9, "bold")
+if IS_MAC:
+    UI, MON = ".AppleSystemUIFont", "Menlo"          # macOS system font (SF) + native mono
+
+
+def _pt(size):
+    """Font size from the Windows layout for this platform: Tk on macOS draws a point as
+    one pixel (72 dpi) while Windows draws it as 4/3 px (96 dpi), so scale up on macOS."""
+    return round(size * 4 / 3) if IS_MAC else size
+
+
+FM   = (UI, _pt(10))
+FB   = (UI, _pt(10), "bold")
+FS   = (UI, _pt(9))
+FMO  = (MON, _pt(9))
+FBUB = (UI, _pt(9), "bold")
 
 _DATA     = os.path.join(os.path.expanduser("~"), ".pgp_messenger")
 _CONTACTS = os.path.join(_DATA, "contacts.json")
@@ -138,7 +149,9 @@ _CUSTOM_PNG = {
     "import_in": (os.path.join(_DATA, "import.png"),  os.path.join(_DESKTOP, "import button.png")),
     "unlock":  (os.path.join(_DATA, "lock-open.png"), os.path.join(_DESKTOP, "decrypt small.png")),
 }
-for _dst, _src in _CUSTOM_PNG.values():
+# Not on macOS: reading ~/Desktop makes macOS ask the user for Desktop access (the
+# bundled assets/ copies are used there).
+for _dst, _src in (() if IS_MAC else _CUSTOM_PNG.values()):
     try:
         if os.path.exists(_src):           # always refresh from the latest Desktop file
             shutil.copyfile(_src, _dst)
@@ -149,7 +162,7 @@ for _dst, _src in _CUSTOM_PNG.values():
 _ICON_DATA = os.path.join(_DATA, "icon.png")
 try:
     _icon_src = os.path.join(_DESKTOP, "icon.png")
-    if os.path.exists(_icon_src):
+    if not IS_MAC and os.path.exists(_icon_src):
         shutil.copyfile(_icon_src, _ICON_DATA)
 except Exception:
     pass
@@ -383,8 +396,16 @@ class Card:
     @staticmethod
     def gpg():
         found = shutil.which("gpg") or shutil.which("gpg2")
-        if found or not IS_WIN:
+        if found or not (IS_WIN or IS_MAC):
             return found
+        if IS_MAC:
+            # an app started from Finder only gets /usr/bin:/bin:/usr/sbin:/sbin — look in
+            # GPG Suite's and Homebrew's (Apple silicon, Intel) install dirs
+            for exe in ("/usr/local/MacGPG2/bin/gpg", "/opt/homebrew/bin/gpg",
+                        "/usr/local/bin/gpg"):
+                if os.path.isfile(exe) and os.access(exe, os.X_OK):
+                    return exe
+            return None
         # PATH can be stale right after GnuPG was installed (e.g. PGPM started by its
         # installer) — fall back to GnuPG's registered install dir / default locations
         dirs = []
@@ -428,7 +449,10 @@ class Card:
             kw["input"] = stdin_text
         else:
             kw["stdin"] = subprocess.DEVNULL
-        return subprocess.run([g] + args, **kw)
+        # an app started from Finder has no terminal: without --no-tty gpg's card / key
+        # editors (--card-edit, --edit-key, --change-pin) die on "cannot open '/dev/tty'"
+        tty = [] if IS_WIN else ["--no-tty"]
+        return subprocess.run([g] + tty + args, **kw)
 
     @staticmethod
     def status():
@@ -451,6 +475,7 @@ class Card:
             "Authentication key": "auth_fpr",
             "PIN retry counter": "pin_retries",
             "Reader": "reader",
+            "URL of public key": "url",
         }
         for line in r.stdout.splitlines():
             if ":" not in line:
@@ -548,7 +573,11 @@ class Card:
                        "created": Card._epoch(f[5] if len(f) > 5 else ""),
                        "expires": Card._epoch(f[6] if len(f) > 6 else ""),
                        "name": "", "email": "", "uids": [],
-                       "secret": rec == "sec", "on_card": False}
+                       "secret": rec == "sec", "on_card": False,
+                       "validity": f[1] if len(f) > 1 else "",
+                       # "E" = the key as a whole can still encrypt (not expired, revoked
+                       # or sign-only) — gpg refuses others as "Unusable public key"
+                       "can_encrypt": len(f) <= 11 or "E" in f[11]}
                 if rec == "sec" and _token_serial(f):
                     cur["on_card"] = True
             elif rec in ("ssb", "sub") and cur and _token_serial(f):
@@ -664,6 +693,11 @@ class Card:
         return Card._card_run("fetch\nquit\n")
 
     @staticmethod
+    def recv_key(fpr, keyserver="hkps://keyserver.ubuntu.com"):
+        """Fetch a public key by fingerprint from a keyserver into the keyring."""
+        return Card._run(["--keyserver", keyserver, "--recv-keys", fpr], timeout=60)
+
+    @staticmethod
     def keytocard(key_fpr, slot="2"):
         # move the (sub)key into a card slot: 1=sign 2=encrypt 3=auth
         cmds = f"keytocard\n{slot}\nsave\n"
@@ -674,6 +708,16 @@ class Card:
 
 # Alias: the class is really a full GnuPG engine now.
 GPG = Card
+
+
+def _wheel_px(e):
+    """Pixels a <MouseWheel> event asks to scroll (positive = toward the top). Windows
+    sends ±120 per wheel notch (70 px here); Tk on macOS sends small line counts (±1 per
+    trackpad step, more for fast swipes) that its own text widgets scroll 15 px each,
+    and flags sideways swipes with Shift."""
+    if IS_MAC:
+        return 0 if e.state & 0x1 else e.delta * 15
+    return (e.delta / 120) * 70.0
 
 
 # ─── Scrollable canvas ────────────────────────────────────────────
@@ -814,9 +858,15 @@ class ScrollFrame(tk.Frame):
             if total <= view:
                 return
             maxtop = total - view
+            if IS_MAC:
+                # trackpads and mice send a stream of small steps that already carry the
+                # system's momentum: follow them directly (easing on top only lags)
+                top = self._c.yview()[0] * total - _wheel_px(e)
+                self._c.yview_moveto(min(max(0.0, top), maxtop) / total)
+                return
             cur = self._first * total
             base = getattr(self, "_starget", cur)
-            self._starget = min(max(0.0, base - (e.delta / 120) * 70.0), maxtop)
+            self._starget = min(max(0.0, base - _wheel_px(e)), maxtop)
             if not getattr(self, "_sanim", False):
                 self._sanim = True
                 self._sstep()
@@ -864,10 +914,13 @@ RAD_W = 16    # corner radius for inputs / search pill (near-pill)
 RAD_BTN = 8   # corner radius for buttons (a little less curved than inputs)
 RAD_WIN = 24  # corner diameter for the app window (≈12px radius, Win11-like)
 APP_W = 920
-APP_H = 540
+APP_H = 540 if IS_WIN else 510   # Windows' 540 includes its 30px custom title bar
 
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.6.2"
 GITHUB_REPO = "PGPM-OPENSOURCE/OPENSOURCE-PGP-MESSANGER"
+# the GnuPG distribution the app points users to
+GPG_DIST, GPG_URL = (("GPG Suite", "https://gpgtools.org") if IS_MAC else
+                     ("Gpg4win", "https://www.gpg4win.org"))
 
 def _pill_label(cv, cx, text, font, img, fill=WT):
     """Draw `img` + `text` centred as one group at x=cx on a BTN_H-tall button canvas;
@@ -875,13 +928,13 @@ def _pill_label(cv, cx, text, font, img, fill=WT):
     if img is not None:
         cv._icon = img
     if img is not None and not text:
-        cv.create_image(cx, BTN_H // 2, image=img)
+        _put_icon(cv, cx, BTN_H // 2, img)
         return None
     if img is None:
         return cv.create_text(cx, BTN_H // 2 + 1, text=text, font=font, fill=fill)
-    iid = cv.create_image(0, 0, image=img)
+    iids = _put_icon(cv, 0, 0, img)
     tid = cv.create_text(0, 0, text=text, font=font, fill=fill, anchor="w")
-    cv._pill = (cx, font, iid, tid, img.width())
+    cv._pill = (cx, font, iids, tid, img)
     _pill_recenter(cv)
     return tid
 
@@ -891,9 +944,10 @@ def _pill_recenter(cv):
     p = getattr(cv, "_pill", None)
     if p:
         import tkinter.font as _tkf
-        cx, font, iid, tid, iw = p
+        cx, font, iids, tid, img = p
+        iw = img.width()
         x0 = cx - (iw + 7 + _tkf.Font(font=font).measure(cv.itemcget(tid, "text"))) // 2
-        cv.coords(iid, x0 + iw // 2, BTN_H // 2)
+        _move_icon(cv, iids, img, x0 + iw // 2, BTN_H // 2)
         cv.coords(tid, x0 + iw + 7, BTN_H // 2 + 1)
 
 
@@ -913,7 +967,7 @@ def _make_btn(parent, text, command, w=150, pbg=None, bold=False, icon=None):
     img = None
     if icon and _HAS_PIL:
         img = _render_icon(icon, 18, WT) if isinstance(icon, str) else icon
-    tid = _pill_label(cv, w // 2, text.upper(), (UI, 9, "bold") if bold else (UI, 9), img)
+    tid = _pill_label(cv, w // 2, text.upper(), FBUB if bold else FS, img)
     st = {"on": True}
 
     def _setbg(hover):
@@ -975,11 +1029,11 @@ def _split_btn(parent, text, command, labels, default=None, pbg=None, w=130, tip
         cv._imgs = imgs
         bgid = cv.create_image(0, 0, image=imgs[None], anchor="nw")
         cv._chev = _render_icon("chevdown", 12, T2)
-        cv.create_image(w - CW // 2, BTN_H // 2, image=cv._chev)
+        _put_icon(cv, w - CW // 2, BTN_H // 2, cv._chev)
     else:
         bgid = _round_rect(cv, 1, 1, w - 1, BTN_H - 1, RAD_BTN, fill=INP, outline=DIV)
         cv.create_text(w - CW // 2, BTN_H // 2, text="▾", fill=T2)
-    _pill_label(cv, (w - CW) // 2, text.upper(), (UI, 9), icon if _HAS_PIL else None)
+    _pill_label(cv, (w - CW) // 2, text.upper(), FS, icon if _HAS_PIL else None)
 
     def part(x):
         return "chev" if x >= w - CW else "main"
@@ -1023,13 +1077,15 @@ def _split_btn(parent, text, command, labels, default=None, pbg=None, w=130, tip
         top = tk.Toplevel(cv); top.overrideredirect(True); top.configure(bg=DIV)
         top.geometry(f"{pw}x{ph}+{x}+{y}")
         state["pop"] = top
-        canvas = tk.Canvas(top, bg=INP, highlightthickness=0, bd=0)
+        canvas = tk.Canvas(top, bg=INP, highlightthickness=0, bd=0,
+                           yscrollincrement=1 if IS_MAC else 0)   # macOS: a unit = 1 px
         canvas.pack(fill="both", expand=True, padx=1, pady=1)
         inner = tk.Frame(canvas, bg=INP)
         iwin = canvas.create_window((0, 0), window=inner, anchor="nw")
 
         def wheel(e):
-            try: canvas.yview_scroll(int(-e.delta / 120), "units")
+            n = -_wheel_px(e) if IS_MAC else -e.delta / 120      # px / wheel notches
+            try: canvas.yview_scroll(int(n), "units")
             except tk.TclError: pass
 
         for lb in labels:
@@ -1040,8 +1096,12 @@ def _split_btn(parent, text, command, labels, default=None, pbg=None, w=130, tip
             cells[0].pack(side="left", fill="x", expand=True)
             if lb == var.get():                              # the current pick
                 chk = _render_icon("check", 12, T2) if _HAS_PIL else None
-                cells.append(tk.Label(r, image=chk, text="" if chk else "✓", font=FM,
-                                      bg=INP, fg=T2, padx=12, cursor="hand2"))
+                if isinstance(chk, _Glyph):          # macOS: the glyph as the label's text
+                    cells.append(tk.Label(r, text=chk.char, font=chk.font,
+                                          bg=INP, fg=T2, padx=12, cursor="hand2"))
+                else:
+                    cells.append(tk.Label(r, image=chk, text="" if chk else "✓", font=FM,
+                                          bg=INP, fg=T2, padx=12, cursor="hand2"))
                 cells[1]._img = chk
                 cells[1].pack(side="right", fill="y")
             for q in cells:
@@ -1256,6 +1316,16 @@ def _rrect_img(w, h, rad, fill, bg, outline=None, ow=1, ss=3):
     img = ImageTk.PhotoImage(im.resize((w, h), Image.LANCZOS))
     _RRECT_CACHE[key] = img
     return img
+
+
+def _card_img(w, h, rad, fill, under, outline=None, ss=3):
+    """Rounded card drawn over `under` (a w×h image of what lies beneath an overlay
+    canvas), so its corners show the app instead of a square."""
+    W, H = w * ss, h * ss
+    im = under.resize((W, H), Image.NEAREST)
+    ImageDraw.Draw(im).rounded_rectangle([0, 0, W - 1, H - 1], radius=rad * ss, fill=fill,
+                                         outline=outline, width=(ss if outline else 1))
+    return ImageTk.PhotoImage(im.resize((w, h), Image.LANCZOS))
 
 
 def _round_bg(cv, fill, rad, outline=None, tag="bgr"):
@@ -1618,7 +1688,8 @@ def _png_img(kind):
         for path in ((entry[0], _resource(os.path.basename(entry[0]))) if entry else ()):
             if path and os.path.exists(path):
                 try:
-                    img = ImageTk.PhotoImage(Image.open(path).convert("RGBA"))
+                    im = Image.open(path).convert("RGBA")
+                    img = _png_glyph(kind, im) or ImageTk.PhotoImage(im)
                     break
                 except Exception:
                     img = None
@@ -1626,9 +1697,39 @@ def _png_img(kind):
     return _CUSTOM_ICONS[ck]
 
 
+def _png_glyph(kind, im):
+    """macOS: PNG icon `kind` as a font glyph of the same size in the art's own colour
+    (the average of its opaque pixels), crisp on Retina — or None."""
+    px = [p for p in im.getdata() if p[3] > 128] if _GLYPHS else ()
+    if not px:
+        return None
+    color = "#%02x%02x%02x" % tuple(sum(p[i] for p in px) // len(px) for i in range(3))
+    g = _glyph("full:" + kind, max(im.size), color)
+    if g is not None:
+        g.box = im.size                         # the image's own width × height
+    return g
+
+
 def _image_button(parent, img_n, img_h, command, pbg=None, tip=None):
     """Icon button that swaps between two ready-made images on hover."""
     pbg = pbg or parent.cget("bg")
+    if isinstance(img_n, _Glyph) and isinstance(img_h, _Glyph):   # macOS: font glyphs
+        (w, h), S = img_n.box, img_n.size
+        cv = tk.Canvas(parent, width=w + 2, height=h + 2, bg=pbg, highlightthickness=0,
+                       bd=0, takefocus=0, cursor="hand2")      # a label's size + padding
+
+        def show(g):                            # the square glyph where the image would be
+            cv.delete("ico")
+            for (ch, _), f in zip(g.layers, g.fills()):
+                cv.create_text(1 + (w - S) // 2, 1 + (h - S) // 2, anchor="nw", text=ch,
+                               font=g.font, fill=f, tags="ico")
+        show(img_n)
+        cv.bind("<Button-1>", lambda _: command())
+        cv.bind("<Enter>", lambda _: show(img_h))
+        cv.bind("<Leave>", lambda _: show(img_n))
+        if tip:
+            _attach_tip(cv, tip)
+        return cv
     lbl = tk.Label(parent, image=img_n, bg=pbg, cursor="hand2", bd=0)
     lbl._imgs = (img_n, img_h)                  # keep refs from GC
     lbl.bind("<Button-1>", lambda _: command())
@@ -1642,6 +1743,9 @@ def _image_button(parent, img_n, img_h, command, pbg=None, tip=None):
 def _icon_full(kind, size, color):
     """A custom icon fitted by its whole canvas rather than its drawing, so a pair drawn on
     the same canvas (closed / open lock) keeps the same scale. None if missing."""
+    g = _glyph("full:" + kind, size, color)     # macOS: a crisp font glyph
+    if g is not None:
+        return g
     ck = ("full", kind, size, color)
     if ck not in _CUSTOM_ICONS:
         a = _custom_alpha(kind) if _HAS_PIL else None
@@ -1688,23 +1792,333 @@ def _lid_masks(shut, opened, n=4):
 
 _ANIM_FRAMES = {}
 
+def _trash_masks():
+    """Alpha frames, closed bin → lid open (the user's two drawings), cropped to one
+    shared box — or None."""
+    shut, opened = _custom_alpha("trash_shut"), _custom_alpha("trash")
+    if shut is None or opened is None or shut.size != opened.size:
+        return None
+    masks = _lid_masks(shut, opened)
+    boxes = [mk.getbbox() for mk in masks if mk.getbbox()]
+    box = (min(b[0] for b in boxes), min(b[1] for b in boxes),
+           max(b[2] for b in boxes), max(b[3] for b in boxes))
+    return [mk.crop(box) for mk in masks]
+
+
 def _trash_frames(size, color):
     """Tinted frames, closed bin → lid open (the user's two drawings), or None."""
     key = (size, color)
     if key not in _ANIM_FRAMES:
-        frames = None
-        shut, opened = _custom_alpha("trash_shut"), _custom_alpha("trash")
-        if shut is not None and opened is not None and shut.size == opened.size:
-            masks = _lid_masks(shut, opened)
-            boxes = [mk.getbbox() for mk in masks if mk.getbbox()]
-            box = (min(b[0] for b in boxes), min(b[1] for b in boxes),
-                   max(b[2] for b in boxes), max(b[3] for b in boxes))
-            frames = [_tint_mask(mk.crop(box), size, color) for mk in masks]   # one shared crop
-        _ANIM_FRAMES[key] = frames
+        masks = _trash_masks()
+        _ANIM_FRAMES[key] = [_tint_mask(mk, size, color) for mk in masks] if masks else None
     return _ANIM_FRAMES[key]
 
 
+# ─── macOS: icons as glyphs of a font traced from them (crisp on Retina) ──────
+# Tk 8.6 on macOS draws a photo image at one pixel per point, so on a Retina screen every
+# icon is blown up 2× and looks soft next to text, which is drawn at full resolution. So on
+# macOS each icon's alpha mask is traced into a glyph of a small TrueType font (built with
+# fontTools on first run, cached in the data dir) and icons are drawn as text in it.
+_GLYPH_FAMILY = "PGPMIcons"
+_GLYPH_VERSION = 3              # bump when the tracing or the set of glyphs changes
+_GLYPH_ASSETS = ("authority.png", "valid.png")     # the _asset_img badges
+_GLYPHS = {}                    # glyph name -> [(character, opacity)]; empty → images
+# marching squares: cell case -> (from edge, to edge), edges 0-3 = top right bottom left,
+# oriented so the inside is on the same side of every segment
+_MS = {1: (2, 3), 2: (1, 2), 3: (1, 3), 4: (0, 1), 6: (0, 2), 7: (0, 3), 8: (3, 0),
+       9: (2, 0), 11: (1, 0), 12: (3, 1), 13: (2, 1), 14: (3, 2)}
+
+
+class _Glyph:
+    """An icon drawn as text in the icon font, standing in for a PhotoImage (width()).
+    Its layers of (character, opacity) are drawn over each other in `color`."""
+
+    def __init__(self, layers, size, color, bg=None):
+        self.layers, self.size, self.color, self.bg = layers, size, color, bg or BK
+        self.font = (_GLYPH_FAMILY, size)
+        self.char = layers[0][0]
+
+    def width(self):
+        return self.size
+
+    def fills(self, color=None):
+        c = color or self.color
+        return [c if a >= 1 else _mix_hex(self.bg, c, a) for _, a in self.layers]
+
+
+def _glyph(name, size, color, bg=None):
+    layers = _GLYPHS.get(name)
+    return _Glyph(layers, size, color, bg) if layers else None
+
+
+def _put_icon(cv, x, y, icon, tags=()):
+    """Draw `icon` (a PhotoImage or a _Glyph) centred at (x, y) on canvas `cv`, where Tk
+    would centre an image of its size; returns its canvas items."""
+    if isinstance(icon, _Glyph):
+        x0, y0 = int(x + 0.5) - icon.size // 2, int(y + 0.5) - icon.size // 2
+        return [cv.create_text(x0, y0, anchor="nw", text=ch, font=icon.font, fill=f, tags=tags)
+                for (ch, _), f in zip(icon.layers, icon.fills())]
+    return [cv.create_image(x, y, image=icon, tags=tags)]
+
+
+def _move_icon(cv, items, icon, x, y):
+    """Centre an icon drawn by _put_icon at (x, y) again."""
+    if isinstance(icon, _Glyph):
+        x, y = int(x + 0.5) - icon.size // 2, int(y + 0.5) - icon.size // 2
+    for it in items:
+        cv.coords(it, x, y)
+
+
+def _fit_square(mask, S=512):
+    """`mask` scaled to fit an S×S square, centred (as _tint_mask fits it)."""
+    mw, mh = mask.size
+    sc = min(S / mw, S / mh)
+    m = mask.resize((max(1, int(mw * sc)), max(1, int(mh * sc))), Image.LANCZOS)
+    out = Image.new("L", (S, S), 0)
+    out.paste(m, ((S - m.width) // 2, (S - m.height) // 2))
+    return out
+
+
+def _simplify(pts, eps):
+    """Douglas–Peucker for a closed loop of points."""
+    if len(pts) < 8:
+        return pts
+    pts = pts + pts[:1]
+    keep = [False] * len(pts)
+    mid = len(pts) // 2
+    keep[0] = keep[mid] = keep[-1] = True
+    stack = [(0, mid), (mid, len(pts) - 1)]
+    while stack:
+        s, e = stack.pop()
+        (x1, y1), (x2, y2) = pts[s], pts[e]
+        dx, dy = x2 - x1, y2 - y1
+        n = (dx * dx + dy * dy) ** 0.5 or 1e-9
+        i, dm = 0, eps
+        for k in range(s + 1, e):
+            d = abs(dy * (pts[k][0] - x1) - dx * (pts[k][1] - y1)) / n
+            if d > dm:
+                i, dm = k, d
+        if i:
+            keep[i] = True
+            stack += [(s, i), (i, e)]
+    return [p for p, k in zip(pts[:-1], keep[:-1]) if k]
+
+
+def _trace(mask, thr=0.5, work=192):
+    """Outline of where `mask` (a square 'L' image) is above `thr`: closed loops of (x, y)
+    in 0..1 units (marching squares; edges sit between pixels by their alpha)."""
+    px = mask.resize((work, work), Image.LANCZOS).load()
+    N = work + 2                                      # an empty border closes every loop
+    v = [[0.0] * N for _ in range(N)]
+    for y in range(work):
+        row = v[y + 1]
+        for x in range(work):
+            row[x + 1] = px[x, y] / 255.0
+
+    def at(e):                                        # edge -> point on it
+        k, x, y = e
+        a, b = (v[y][x], v[y][x + 1]) if k == "h" else (v[y][x], v[y + 1][x])
+        t = 0.5 if a == b else (thr - a) / (b - a)
+        return (x + t, y) if k == "h" else (x, y + t)
+
+    nxt = {}
+    for y in range(N - 1):
+        for x in range(N - 1):
+            a, b, c, d = v[y][x], v[y][x + 1], v[y + 1][x + 1], v[y + 1][x]
+            i = (a > thr) * 8 + (b > thr) * 4 + (c > thr) * 2 + (d > thr)
+            if i in (0, 15):
+                continue
+            E = (("h", x, y), ("v", x + 1, y), ("h", x, y + 1), ("v", x, y))
+            if i in (5, 10):                          # saddle: the centre decides
+                mid = (a + b + c + d) / 4 > thr
+                pairs = (((0, 3), (2, 1)) if mid else ((0, 1), (2, 3))) if i == 5 else \
+                        (((3, 2), (1, 0)) if mid else ((3, 0), (1, 2)))
+            else:
+                pairs = (_MS[i],)
+            for s, e in pairs:
+                nxt[E[s]] = E[e]
+    loops, seen = [], set()
+    for start in nxt:
+        if start in seen:
+            continue
+        loop, e = [], start
+        while e not in seen and e in nxt:
+            seen.add(e)
+            loop.append(at(e))
+            e = nxt[e]
+        if len(loop) >= 3:
+            loops.append(_simplify([((x - 1) / work, (y - 1) / work) for x, y in loop],
+                                   0.12 / work))
+    return loops
+
+
+def _inside(pt, loop):
+    x, y, c = pt[0], pt[1], False
+    for (x1, y1), (x2, y2) in zip(loop, loop[-1:] + loop[:-1]):
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+            c = not c
+    return c
+
+
+def _glyph_contours(mask, thr):
+    """TrueType contours (1000 units, y up) of `mask`: outer loops clockwise, holes not."""
+    loops = _trace(mask, thr)
+    out = []
+    for i, lp in enumerate(loops):
+        depth = sum(_inside(lp[0], o) for j, o in enumerate(loops) if j != i)
+        pts = [(round(x * 1000), round((1 - y) * 1000)) for x, y in lp]
+        area = sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1]))
+        if (area > 0) == (depth % 2 == 0):
+            pts.reverse()
+        out.append(pts)
+    return out
+
+
+def _mask_layers(mask):
+    """[(threshold, opacity)] to trace a mask with: one solid layer, or two when part of
+    the drawing is see-through (that part is drawn at its opacity under the solid one)."""
+    m = mask.copy()
+    m.thumbnail((256, 256), Image.LANCZOS)
+    lo, hi = m.filter(ImageFilter.MinFilter(3)), m.filter(ImageFilter.MaxFilter(3))
+    part = [p for p, a, b in zip(m.getdata(), lo.getdata(), hi.getdata())
+            if 51 < p < 204 and a > 25 and b < 230]            # not just soft edges
+    if len(part) < 0.05 * sum(1 for p in m.getdata() if p > 25):
+        return [(0.5, 1.0)]
+    level = sum(part) / len(part) / 255
+    return [(level / 2, level), ((1 + level) / 2, 1.0)]
+
+
+def _glyph_masks():
+    """name -> (512² alpha mask, layers) for every icon the UI draws, fitted the way the
+    image code fits them."""
+    out = {}
+    for kind in list(_CUSTOM_PNG) + list(_PIL_ICONS):
+        if kind in out:
+            continue
+        m = _custom_mask(kind)
+        if m is not None:
+            out[kind] = (_fit_square(m), _mask_layers(m))
+        elif kind in _PIL_ICONS:
+            im = Image.new("L", (512, 512), 0)
+            _PIL_ICONS[kind](ImageDraw.Draw(im), 512, 255)
+            out[kind] = (im, [(0.5, 1.0)])
+    for kind in ("generate", "import_in", "lock", "unlock",     # _icon_full's whole canvas
+                 "nick", "nick_hover"):                          # and _png_img's
+        a = _custom_alpha(kind)
+        if a is not None:
+            out["full:" + kind] = (_fit_square(a), _mask_layers(a))
+    for i, mk in enumerate(_trash_masks() or ()):
+        out[f"trash:{i}"] = (_fit_square(mk), [(0.5, 1.0)])
+    for name in _GLYPH_ASSETS:
+        if os.path.exists(_resource(name)):
+            a = Image.open(_resource(name)).convert("RGBA").getchannel("A")
+            out["asset:" + name] = (_fit_square(a), _mask_layers(a))
+    return out
+
+
+def _build_glyph_font(masks, path):
+    """Trace `masks` into a TrueType font at `path`; returns {name: [(codepoint, opacity)]}."""
+    from fontTools.fontBuilder import FontBuilder
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+    # tables fontTools loads by name — imported here so a frozen app bundles them too
+    from fontTools.ttLib.tables import (  # noqa: F401
+        O_S_2f_2, _c_m_a_p, _g_l_y_f, _h_e_a_d, _h_h_e_a, _h_m_t_x, _l_o_c_a, _m_a_x_p,
+        _n_a_m_e, _p_o_s_t)
+    order, glyphs, cmap, names = [".notdef"], {".notdef": []}, {}, {}
+    for name, (mask, layers) in sorted(masks.items()):
+        names[name] = []
+        for thr, opacity in layers:
+            g = f"g{len(order)}"
+            cmap[0xE000 + len(order)] = g
+            names[name].append((0xE000 + len(order), opacity))
+            glyphs[g] = _glyph_contours(mask, thr)
+            order.append(g)
+    tt, metrics = {}, {}
+    for g in order:
+        pen = TTGlyphPen(None)
+        for c in glyphs[g]:
+            if len(c) >= 3:
+                pen.moveTo(c[0])
+                for p in c[1:]:
+                    pen.lineTo(p)
+                pen.closePath()
+        tt[g] = pen.glyph()
+        metrics[g] = (1000, min((p[0] for c in glyphs[g] for p in c), default=0))
+    fb = FontBuilder(1000, isTTF=True)
+    fb.setupGlyphOrder(order)
+    fb.setupCharacterMap(cmap)
+    fb.setupGlyf(tt)
+    fb.setupHorizontalMetrics(metrics)
+    fb.setupHorizontalHeader(ascent=1000, descent=0)       # a glyph fills its em square
+    fb.setupNameTable({"familyName": _GLYPH_FAMILY, "styleName": "Regular",
+                       "uniqueFontIdentifier": _GLYPH_FAMILY + "-Regular",
+                       "fullName": _GLYPH_FAMILY, "psName": _GLYPH_FAMILY,
+                       "version": f"Version {_GLYPH_VERSION}.000"})
+    fb.setupOS2(sTypoAscender=1000, sTypoDescender=0, sTypoLineGap=0, usWinAscent=1000,
+                usWinDescent=0, usWeightClass=400, fsSelection=0x40, achVendID="PGPM")
+    fb.setupPost()
+    fb.save(path)
+    return names
+
+
+def _register_font(path):
+    """Make a font file usable in this process only (CoreText, macOS)."""
+    import ctypes
+    ct = ctypes.CDLL("/System/Library/Frameworks/CoreText.framework/CoreText")
+    cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    cf.CFURLCreateFromFileSystemRepresentation.restype = ctypes.c_void_p
+    cf.CFURLCreateFromFileSystemRepresentation.argtypes = [
+        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_bool]
+    ct.CTFontManagerRegisterFontsForURL.restype = ctypes.c_bool
+    ct.CTFontManagerRegisterFontsForURL.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
+                                                    ctypes.c_void_p]
+    b = os.fsencode(path)
+    url = cf.CFURLCreateFromFileSystemRepresentation(None, b, len(b), False)
+    return bool(url) and ct.CTFontManagerRegisterFontsForURL(url, 1, None)   # 1 = process
+
+
+def _setup_glyphs(root):
+    """Build (or reuse) the icon font and register it; fills _GLYPHS. On any failure
+    _GLYPHS stays empty and icons stay images."""
+    try:
+        import hashlib, glob, time
+        t0 = time.time()
+        h = hashlib.sha256(str(_GLYPH_VERSION).encode())
+        for kind in sorted(_CUSTOM_PNG):               # the PNGs the icons come from
+            entry = _CUSTOM_PNG[kind]
+            src = next((p for p in (entry[0], _resource(os.path.basename(entry[0])))
+                        if os.path.exists(p)), None)
+            if src:
+                with open(src, "rb") as fh:
+                    h.update(kind.encode() + fh.read())
+        for name in _GLYPH_ASSETS:
+            if os.path.exists(_resource(name)):
+                with open(_resource(name), "rb") as fh:
+                    h.update(name.encode() + fh.read())
+        base = os.path.join(_DATA, "icons-" + h.hexdigest()[:16])
+        names = _load(base + ".json", None) if os.path.exists(base + ".ttf") else None
+        if not names:
+            names = _build_glyph_font(_glyph_masks(), base + ".ttf")
+            _save(base + ".json", names)
+            for old in glob.glob(os.path.join(_DATA, "icons-*")):
+                if not old.startswith(base):
+                    try: os.remove(old)
+                    except OSError: pass
+        if not _register_font(base + ".ttf"):
+            raise RuntimeError("CoreText did not register the font")
+        import tkinter.font as _tkf
+        if _tkf.Font(root=root, family=_GLYPH_FAMILY, size=12).actual("family") != _GLYPH_FAMILY:
+            raise RuntimeError("Tk does not see the font")
+        _GLYPHS.update({n: [(chr(cp), a) for cp, a in v] for n, v in names.items()})
+        _log(f"glyph icons: {len(_GLYPHS)} in {time.time() - t0:.2f}s")
+    except Exception as e:
+        _log(f"glyph icons unavailable, drawing images: {e!r}")
+
+
 def _render_icon(kind, size, color, bg=None, ss=4):
+    g = _glyph(kind, size, color, bg)           # macOS: a crisp font glyph
+    if g is not None:
+        return g
     img = _custom_icon_img(kind, size, color)   # custom png (key / keycard) if present
     if img is not None:
         return img
@@ -1726,7 +2140,7 @@ def _attach_tip(widget, text):
         t = tk.Toplevel(widget)
         t.overrideredirect(True)
         t.configure(bg=DIV)
-        tk.Label(t, text=text() if callable(text) else text, font=(UI, 8), bg="#202022",
+        tk.Label(t, text=text() if callable(text) else text, font=(UI, _pt(8)), bg="#202022",
                  fg=T1, padx=8, pady=3).pack(padx=1, pady=1)
         t.update_idletasks()
         x = widget.winfo_rootx() + widget.winfo_width() // 2 - t.winfo_width() // 2
@@ -1751,13 +2165,16 @@ def _attach_tip(widget, text):
     widget.bind("<Button-1>", lambda _: hide(), add="+")
 
 
-def _icon_widget(parent, size, kind, command, fg=T2, hover=T1, pbg=None, tip=None):
-    """High-quality icon button (PIL); falls back to canvas drawing."""
+def _icon_widget(parent, size, kind, command, fg=T2, hover=T1, pbg=None, tip=None, pad=1):
+    """High-quality icon button (PIL, or a font glyph on macOS); falls back to canvas
+    drawing. `pad` = space around the icon (1px, a label's default)."""
     pbg = pbg or parent.cget("bg")
     if _HAS_PIL:
         img_n = _render_icon(kind, size, fg, pbg)
+        if isinstance(img_n, _Glyph):
+            return _glyph_widget(parent, img_n, command, hover, pbg, pad, tip)
         img_h = _render_icon(kind, size, hover, pbg)
-        lbl = tk.Label(parent, image=img_n, bg=pbg, cursor="hand2", bd=0)
+        lbl = tk.Label(parent, image=img_n, bg=pbg, cursor="hand2", bd=0, padx=pad, pady=pad)
         lbl._imgs = (img_n, img_h)          # keep refs from GC
         lbl.bind("<Button-1>", lambda _: command())
         lbl.bind("<Enter>", lambda _: lbl.configure(image=img_h))
@@ -1772,9 +2189,63 @@ def _icon_widget(parent, size, kind, command, fg=T2, hover=T1, pbg=None, tip=Non
     return w
 
 
+def _glyph_widget(parent, g, command, hover, pbg, pad, tip):
+    """_icon_widget for a font glyph: a small canvas, recoloured in place on hover."""
+    s = g.size + 2 * pad
+    cv = tk.Canvas(parent, width=s, height=s, bg=pbg, highlightthickness=0, bd=0,
+                   takefocus=0, cursor="hand2")
+    items = [cv.create_text(pad, pad, anchor="nw", text=ch, font=g.font, fill=f)
+             for (ch, _), f in zip(g.layers, g.fills())]
+
+    def lit(on):                                # hovered, or its tab is open
+        for it, f in zip(items, g.fills(hover if on else None)):
+            cv.itemconfigure(it, fill=f)
+    cv._lit = lit
+    cv.bind("<Button-1>", lambda _: command())
+    cv.bind("<Enter>", lambda _: lit(True))
+    cv.bind("<Leave>", lambda _: lit(False))
+    if tip:
+        _attach_tip(cv, tip)
+    return cv
+
+
 def _trash_button(parent, size, command, fg=T3, hover=RD, pbg=None, tip=None):
     """Delete button: while hovered the bin turns `hover` and its lid swings open over a
     few frames; it swings shut again on leave."""
+    chars = [_GLYPHS.get(f"trash:{i}") for i in range(4)] if _GLYPHS else None
+    if chars and all(chars):                    # macOS: the frames as font glyphs
+        pbg = pbg or parent.cget("bg")
+        cv = tk.Canvas(parent, width=size + 2, height=size + 2, bg=pbg,
+                       highlightthickness=0, bd=0, takefocus=0, cursor="hand2")
+        item = cv.create_text(1, 1, anchor="nw", text=chars[0][0][0],
+                              font=(_GLYPH_FAMILY, size), fill=fg)
+        st = {"i": 0, "dir": 0, "job": None}
+
+        def gstep():
+            st["job"] = None
+            if not cv.winfo_exists():
+                return
+            i = st["i"] + st["dir"]
+            if 0 <= i < len(chars):
+                st["i"] = i
+                cv.itemconfigure(item, text=chars[i][0][0], fill=hover)
+                st["job"] = cv.after(35, gstep)
+            elif st["dir"] < 0:
+                cv.itemconfigure(item, text=chars[0][0][0], fill=fg)   # shut again
+
+        def ggo(d):
+            st["dir"] = d
+            if d > 0:
+                cv.itemconfigure(item, fill=hover)
+            if st["job"] is None:
+                st["job"] = cv.after(35, gstep)
+
+        cv.bind("<Enter>", lambda _: ggo(1))
+        cv.bind("<Leave>", lambda _: ggo(-1))
+        cv.bind("<Button-1>", lambda _: command())
+        if tip:
+            _attach_tip(cv, tip)
+        return cv
     rest = _trash_frames(size, fg) if _HAS_PIL else None
     lit = _trash_frames(size, hover) if _HAS_PIL else None
     if not rest or not lit:
@@ -1957,9 +2428,13 @@ class App(tk.Tk):
             _log(f"ui_font={UI!r} inter_available={'Inter' in _tkf.families()}")
         except Exception:
             pass
+        if IS_MAC and _HAS_PIL:
+            _setup_glyphs(self)             # crisp font-glyph icons on Retina screens
         if IS_WIN:
             self.overrideredirect(True)     # custom borderless chrome (Windows only)
         self.geometry(f"{APP_W}x{APP_H}")
+        if not IS_WIN:
+            self.minsize(APP_W, APP_H)      # the native window is resizable; never below the layout
         self.configure(bg=BK)
         self.option_add("*tearOff", False)
         self._dx = self._dy = 0
@@ -1983,6 +2458,8 @@ class App(tk.Tk):
 
         self._ui()
         self._set_icon()
+        if IS_MAC:
+            self._mac_chrome()
         self.protocol("WM_DELETE_WINDOW", self._quit)   # native close → full exit
         self.center()
         if IS_WIN:
@@ -1994,6 +2471,8 @@ class App(tk.Tk):
             if os.environ.get("PGPM_DROPTEST_SERVE"):
                 self.after(800, self._droptest_serve)   # real-drag test target → exits on load
             self.bind("<Map>", self._on_restore)        # keep rounded corners after restore
+        if IS_MAC:
+            self.after(220, self._enable_drop_mac)      # files dragged in from Finder
         self._start_card_watch()          # live plug/unplug detection
         self.after(1500, self._check_update)            # non-blocking update check
         # open silently — no auto card/setup prompt
@@ -2015,6 +2494,32 @@ class App(tk.Tk):
             self.iconphoto(True, self._icon_img)
         except Exception:
             pass
+
+    def _mac_chrome(self):
+        """macOS: keep the native title bar dark like the app (also in light mode), and
+        replace Tk's default menus (About Tcl & Tk, File ▸ Source… which runs Tcl
+        scripts) with About PGPM + the standard Edit and Window menus."""
+        try:
+            self.tk.call("::tk::unsupported::MacWindowStyle", "appearance", self, "darkaqua")
+        except tk.TclError:
+            pass
+        mb = tk.Menu(self)
+        app = tk.Menu(mb, name="apple")
+        app.add_command(label="About PGPM", command=lambda: self._info(
+            f"PGPM v{APP_VERSION}", f"https://github.com/{GITHUB_REPO}"))
+        mb.add_cascade(menu=app)
+        edit = tk.Menu(mb)
+        for label, key, ev in (("Cut", "X", "<<Cut>>"), ("Copy", "C", "<<Copy>>"),
+                               ("Paste", "V", "<<Paste>>"), ("Select All", "A", "<<SelectAll>>")):
+            edit.add_command(label=label, accelerator=f"Command-{key}",
+                             command=lambda ev=ev: self.focus_get() and
+                             self.focus_get().event_generate(ev))
+        mb.add_cascade(label="Edit", menu=edit)
+        mb.add_cascade(label="Window", menu=tk.Menu(mb, name="window"))
+        self.configure(menu=mb)
+        # clicking the Dock icon should bring back a minimized window (Tk only activates)
+        self.createcommand("::tk::mac::ReopenApplication",
+                           lambda: self.state() == "iconic" and self.deiconify())
 
     def _win_taskbar(self):
         """Give the borderless Windows window a real taskbar button + its own
@@ -2279,7 +2784,7 @@ class App(tk.Tk):
             _round_bg(pill, INP, RAD_W, outline=DIV)
             pill.delete("mag")
             if mag_img is not None:
-                pill.create_image(16, h // 2, image=mag_img, tags="mag")
+                _put_icon(pill, 16, h // 2, mag_img, tags="mag")
             pill.coords(ent_win, 30, h // 2)
             pill.itemconfig(ent_win, width=w - 42, height=h - 10)
         pill.bind("<Configure>", _pill_redraw)
@@ -2317,9 +2822,7 @@ class App(tk.Tk):
                 ("verify",  "decrypt", self._open_decrypt,     "Decrypt / Verify"),
                 ("usbkey",  "card",    self._open_card,        "Smartcard / Keycard"))):
             ic = _icon_widget(tools, 30, kind, lambda v=view, c=cmd: self._show(v, c),
-                              fg=T3, hover=T2, tip=tip)
-            if _HAS_PIL:
-                ic.configure(padx=0, pady=0)            # exactly 30px, no label padding
+                              fg=T3, hover=T2, tip=tip, pad=0)   # exactly 30px, no padding
             ic.pack(side="left", padx=(20, 0))
             ic.bind("<Leave>", lambda _: self._sync_tool_icons(), add="+")   # keep the open tab lit
             self._tool_icons[view] = ic
@@ -2377,9 +2880,12 @@ class App(tk.Tk):
         except Exception:
             under = None
         for view, ic in getattr(self, "_tool_icons", {}).items():
+            lit = view == getattr(self, "_view", None) or ic is under
+            if hasattr(ic, "_lit"):
+                ic._lit(lit)
+                continue
             imgs = getattr(ic, "_imgs", None)
             if imgs:
-                lit = view == getattr(self, "_view", None) or ic is under
                 ic.configure(image=imgs[1] if lit else imgs[0])
 
     # ── Panel header ──────────────────────────────────────────────
@@ -2404,6 +2910,11 @@ class App(tk.Tk):
         f = tk.Frame(self._main, bg=BK)
         f.place(relx=0.5, rely=0.45, anchor="center")
         vl = tk.Label(f, text=f" PGPM v{APP_VERSION}", font=FS, bg=BK, fg=T3)
+        g = _glyph("asset:authority.png", 14, T3)
+        if g is not None:                        # macOS: a crisp glyph beside the text
+            tk.Label(f, text=g.char, font=g.font, bg=BK, fg=T3, bd=0).pack(side="left")
+            vl.pack(side="left")
+            return
         auth = self._asset_img("authority.png", 14, tint=T3)
         if auth is not None:
             vl.configure(image=auth, compound="left")
@@ -2424,19 +2935,19 @@ class App(tk.Tk):
         st_row = tk.Frame(f, bg=BK)
         st_row.pack(fill="x", padx=20, pady=(16, 0))
         if not Card.available():
-            stc, stt = RD, "● GnuPG not found — install Gpg4win for key storage"
+            stc, stt = RD, f"● GnuPG not found — install {GPG_DIST} for key storage"
         elif self._secret:
             stc, stt = GN, f"● {len(self._secret)} of your keys in the GnuPG keyring"
         elif getattr(self, "_card_present", None) is True:
             stc, stt = T2, "● Keycard detected"
         else:
             stc, stt = RD, "● no private keys yet — generate or import one below"
-        tk.Label(st_row, text=stt, font=(UI, 9, "bold"),
+        tk.Label(st_row, text=stt, font=(UI, _pt(9), "bold"),
                  bg=BK, fg=stc).pack(anchor="w")
 
         def _section(title):
             tk.Frame(f, bg=DIV, height=1).pack(fill="x", padx=20, pady=(16, 0))
-            tk.Label(f, text=title, font=(UI, 8, "bold"),
+            tk.Label(f, text=title, font=(UI, _pt(8), "bold"),
                      bg=BK, fg=T3).pack(anchor="w", padx=20, pady=(6, 4))
 
         # ─ My keys (compact cards; click one to make it active) ─
@@ -2522,7 +3033,7 @@ class App(tk.Tk):
         cv._fpr = k["fpr"]
         # measure text so the box wraps just around the content
         nid = cv.create_text(44, 17, text=nm, anchor="w", font=FB)
-        mid = cv.create_text(44, 34, text=meta, anchor="w", font=(UI, 8))
+        mid = cv.create_text(44, 34, text=meta, anchor="w", font=(UI, _pt(8)))
         cw = max(cv.bbox(nid)[2], cv.bbox(mid)[2]) + 14
         cv.delete("all")
         cv.configure(width=cw)
@@ -2536,9 +3047,9 @@ class App(tk.Tk):
             cv.delete("fg")
             if icon is not None:
                 cv._kicon = icon
-                cv.create_image(23, H // 2, image=icon, tags="fg")
+                _put_icon(cv, 23, H // 2, icon, tags="fg")
             cv.create_text(44, 17, text=nm, anchor="w", font=FB, fill=T1, tags="fg")
-            cv.create_text(44, 34, text=meta, anchor="w", font=(UI, 8), fill=T3, tags="fg")
+            cv.create_text(44, 34, text=meta, anchor="w", font=(UI, _pt(8)), fill=T3, tags="fg")
         cv._redraw = redraw
         cv.bind("<Configure>", redraw)
         cv.bind("<Button-1>", lambda _, fp=k["fpr"]: self._activate_key(fp))
@@ -2572,7 +3083,7 @@ class App(tk.Tk):
         self._akd_oncard = None      # force the action row to build on first update
 
         tk.Frame(akd, bg=DIV, height=1).pack(fill="x", padx=20, pady=(16, 0))
-        tk.Label(akd, text="ACTIVE KEY", font=(UI, 8, "bold"),
+        tk.Label(akd, text="ACTIVE KEY", font=(UI, _pt(8), "bold"),
                  bg=BK, fg=T3).pack(anchor="w", padx=20, pady=(6, 4))
         info = tk.Frame(akd, bg=BK); info.pack(fill="x", padx=20)
         for label in ("Name", "Email", "Key ID", "Fingerprint",
@@ -2701,7 +3212,7 @@ class App(tk.Tk):
         if not name:
             self._warn("Required", "Name is required.", parent=self); return
         if not Card.available():
-            self._error("No GnuPG", "GnuPG is required. Install Gpg4win.",
+            self._error("No GnuPG", f"GnuPG is required. Install {GPG_DIST}.",
                                  parent=self); return
         self._gen_btn.set_text("generating…"); self._gen_btn.set_enabled(False)
         self.update()
@@ -2931,7 +3442,14 @@ class App(tk.Tk):
         h = body.winfo_reqheight()
         cv.configure(width=w + 2 * PAD, height=h + 2 * PAD)
         cv.create_window(PAD, PAD, window=body, anchor="nw", width=w)
-        cv.bind("<Configure>", lambda _: _round_bg(cv, HDR, 14, outline=DIV))
+        if IS_WIN or not _HAS_PIL:
+            cv.bind("<Configure>", lambda _: _round_bg(cv, HDR, 14, outline=DIV))
+        else:
+            # no window regions here (Windows clips the canvas below): paint its corners
+            # with what they cover, sampled before the card is placed over it
+            W, H = w + 2 * PAD, h + 2 * PAD
+            cv._bgimg = _card_img(W, H, 14, HDR, self._under_card(W, H, 14), outline=DIV)
+            cv.create_image(0, 0, image=cv._bgimg, anchor="nw")
         cv.place(relx=0.5, rely=0.5, anchor="center")
         tk.Misc.tkraise(cv)                              # (Canvas.lift raises items, not the widget)
         if IS_WIN:
@@ -2978,6 +3496,56 @@ class App(tk.Tk):
         except Exception:
             pass
         return res["v"], res["text"]
+
+    def _under_card(self, W, H, rad):
+        """A W×H image of what the app shows where a card centred in the window is about
+        to go: its corner squares, pixel by pixel, so lines and field edges under a corner
+        carry on instead of turning into a coloured square."""
+        self.update_idletasks()
+        # where place(relx=0.5, rely=0.5, anchor="center") puts it (tkPlace.c rounding)
+        x0 = self.winfo_rootx() + int(self.winfo_width() / 2 + 0.5) - W // 2
+        y0 = self.winfo_rooty() + int(self.winfo_height() / 2 + 0.5) - H // 2
+        im = Image.new("RGB", (W, H), HDR)
+        px, memo, r = im.load(), {}, rad + 1
+        for cx, cy in ((0, 0), (W - r, 0), (0, H - r), (W - r, H - r)):
+            ox, oy = (rad if cx == 0 else W - 1 - rad), (rad if cy == 0 else H - 1 - rad)
+            for y in range(cy, cy + r):
+                for x in range(cx, cx + r):
+                    if (x + 0.5 - ox) ** 2 + (y + 0.5 - oy) ** 2 < (rad - 1.5) ** 2:
+                        continue                        # the card covers this pixel anyway
+                    px[x, y] = self._color_at(x0 + x, y0 + y, memo)
+        return im
+
+    def _color_at(self, x, y, memo):
+        """(r, g, b) the app shows at screen point (x, y): the widget's background, or on
+        a canvas its topmost item there (an image's pixel or a shape's fill)."""
+        try:
+            w = self.winfo_containing(x, y)
+        except (KeyError, tk.TclError):
+            w = None
+        col = BK if w is None else None
+        if isinstance(w, tk.Canvas):
+            try:
+                cx, cy = w.canvasx(x - w.winfo_rootx()), w.canvasy(y - w.winfo_rooty())
+                for it in reversed(w.find_overlapping(cx, cy, cx, cy)):
+                    kind = w.type(it)
+                    if kind == "image":
+                        img = w.itemcget(it, "image")
+                        ix, iy = int(cx - w.bbox(it)[0]), int(cy - w.bbox(it)[1])
+                        if self.tk.getboolean(self.tk.call(img, "transparency", "get", ix, iy)):
+                            continue
+                        return tuple(int(v) for v in self.tk.splitlist(
+                            self.tk.call(img, "get", ix, iy)))
+                    if kind in ("rectangle", "polygon", "oval") and w.itemcget(it, "fill"):
+                        col = w.itemcget(it, "fill")
+                        break
+            except tk.TclError:
+                pass
+        if col is None:
+            col = w.cget("bg")
+        if col not in memo:
+            memo[col] = tuple(v >> 8 for v in self.winfo_rgb(col))
+        return memo[col]
 
     def _info(self, title, message="", **_):
         self._dialog(title, message)
@@ -3124,7 +3692,7 @@ class App(tk.Tk):
         if Card.available():
             # note pinned to the bottom, centred, at half strength (Tk text has no alpha,
             # so the colour is mixed 50% into the background — same look on a flat bg)
-            tk.Label(self._main, font=(UI, 8), bg=BK, fg=_mix_hex(T2, BK, 0.5),
+            tk.Label(self._main, font=(UI, _pt(8)), bg=BK, fg=_mix_hex(T2, BK, 0.5),
                      justify="center", wraplength=560,
                      text="Use an OpenPGP smartcard through GnuPG. The private key stays on the "
                           "card; signing and decryption happen on the card (PIN via GnuPG's "
@@ -3137,10 +3705,10 @@ class App(tk.Tk):
 
         if not Card.available():
             tk.Label(f, text="● GnuPG is required for hardware keycards",
-                     font=(UI, 9, "bold"), bg=BK, fg=RD).pack(anchor="w", padx=20, pady=(18, 4))
-            tk.Label(f, text="Install Gpg4win, then plug in your Nitrokey or YubiKey.",
+                     font=(UI, _pt(9), "bold"), bg=BK, fg=RD).pack(anchor="w", padx=20, pady=(18, 4))
+            tk.Label(f, text=f"Install {GPG_DIST}, then plug in your Nitrokey or YubiKey.",
                      font=FS, bg=BK, fg=T2).pack(anchor="w", padx=20)
-            tk.Label(f, text="https://www.gpg4win.org", font=FMO,
+            tk.Label(f, text=GPG_URL, font=FMO,
                      bg=BK, fg=T3).pack(anchor="w", padx=20, pady=(2, 0))
             return
 
@@ -3155,7 +3723,7 @@ class App(tk.Tk):
         mw = self._main_host.winfo_width()
         CW = (mw if mw > 1 else APP_W - 221) - 40            # content width of the panel
         BW = max(185, min(240, (CW - 2 * GAP) // 3))         # lone Detect button (no card)
-        f_reg, f_bold = _tkf.Font(font=(UI, 9)), _tkf.Font(font=(UI, 9, "bold"))
+        f_reg, f_bold = _tkf.Font(font=FS), _tkf.Font(font=FBUB)   # the buttons' fonts
 
         def grid_cols(items):
             need = max((f_bold if b else f_reg).measure(l.upper()) for l, _, b in items) + 32
@@ -3169,10 +3737,11 @@ class App(tk.Tk):
             r = tk.Frame(parent, bg=BK); r.pack(anchor="w", pady=(GAP, 0)); return r
 
         def btn_row(w, *items):
-            r = actbar(body)
+            r, made = actbar(body), {}
             for i, (label, cmd, bold) in enumerate(items):
-                _make_btn(r, label, cmd, w=w, pbg=BK, bold=bold).pack(
-                    side="left", padx=(0 if i == 0 else GAP, 0))
+                made[label] = _make_btn(r, label, cmd, w=w, pbg=BK, bold=bold)
+                made[label].pack(side="left", padx=(0 if i == 0 else GAP, 0))
+            return made                                  # label -> button
 
         def in_use(info):
             """This exact card (by serial) is the one the user clicked USE THIS CARD on."""
@@ -3214,7 +3783,7 @@ class App(tk.Tk):
             if info.get("present"):
                 self._card_info = info               # shown instantly next time while in use
             if not info.get("present"):
-                tk.Label(body, text="Insert your smartcard", font=(UI, 9, "bold"),
+                tk.Label(body, text="Insert your smartcard", font=(UI, _pt(9), "bold"),
                          bg=BK, fg=T1).pack(anchor="w")
                 detect_btn.pack(anchor="w", padx=20, pady=(GAP, 0), after=body)   # lone Detect below
                 return
@@ -3226,15 +3795,14 @@ class App(tk.Tk):
                 if info.get(key):
                     _kv_row(body, lbl, info[key])
             enc = info.get("enc_fpr") or info.get("sig_fpr")
+            made = {}                                    # the grid's buttons, by label
 
             def use_card(fpr=enc):
                 if not fpr:
                     self._warn("No key", "Card has no key.", parent=self); return
-                if not Card.export_pub(fpr):
-                    self._warn("Public key not in keyring",
-                        "GnuPG doesn't have this card's public key.\n"
-                        "Set a key URL on the card and Fetch, or import the matching .asc.",
-                        parent=self); return
+                if not Card.export_pub(fpr):           # get it first, then come back here
+                    return self._card_pubkey(info, fpr, made.get("Use this card"),
+                                             lambda: use_card(fpr))
                 # the card reports its (sub)key fprs; the app tracks keys by primary fpr
                 self._card_present = True; self._card_in_use = True
                 self._card_serial = info.get("serial")
@@ -3254,13 +3822,14 @@ class App(tk.Tk):
                 ("Unblock PIN", lambda: self._card_action(
                     lambda: Card.card_change_pin("2"), "PIN unblocked."), False),
                 ("Set name", self._card_name, False),
-                ("Set key URL", self._card_url, False),
+                ("Set key URL", lambda: self._card_url(info), False),
                 ("Fetch key", lambda: self._card_action(
-                    lambda: Card.card_fetch(), "Fetched public key from URL."), False),
+                    lambda: Card.card_fetch(), "Fetched public key from URL.",
+                    check=lambda out: self._fetch_problem(out, enc)), False),
                 ("Detect another card" if using else "Detect card", detect, True)]
             cols, w = grid_cols(items)
             for i in range(0, len(items), cols):
-                btn_row(w, *items[i:i + cols])
+                made.update(btn_row(w, *items[i:i + cols]))
 
         cached = getattr(self, "_card_info", None)
         showing = bool(cached and self._card_present is True and in_use(cached))
@@ -3274,8 +3843,9 @@ class App(tk.Tk):
             render(cached)                # then a silent re-check in case anything changed
             detect(quiet=True)
 
-    def _card_action(self, fn, ok_msg):
-        """Run a card command (which may pop gpg's pinentry) off the UI thread."""
+    def _card_action(self, fn, ok_msg, check=None):
+        """Run a card command (which may pop gpg's pinentry) off the UI thread.
+        `check(gpg output)` may return why it didn't take effect after all."""
         res, err = [None], [None]
 
         def worker():
@@ -3295,12 +3865,92 @@ class App(tk.Tk):
                 out = ((getattr(r, "stderr", "") or "") + (getattr(r, "stdout", "") or "")).strip()
                 if rc not in (0, None) and ("error" in out.lower() or "failed" in out.lower()):
                     self._error("Card error", out[:600] or "command failed", parent=self)
+                elif check and (why := check(out)):
+                    self._warn("Not done", why, parent=self)
                 else:
                     self._info("Done", ok_msg, parent=self)
                 self._reload_keys(); self._rebuild_list()
             self._open_card()
 
         self.after(150, poll)
+
+    def _bg(self, fn, then):
+        """Run `fn` (gpg — may wait on the network or the card) off the UI thread, then
+        `then(result, error)` back on it."""
+        out = [None, None]
+
+        def worker():
+            try: out[0] = fn()
+            except Exception as e: out[1] = e
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+
+        def poll():
+            if t.is_alive():
+                self.after(150, poll); return
+            then(*out)
+        self.after(150, poll)
+
+    def _card_pubkey(self, info, fpr, btn, retry):
+        """USE THIS CARD while GnuPG lacks the card's public key: fetch it from the card's
+        key URL, else offer to look it up on keyserver.ubuntu.com; `retry()` once it's in.
+        (Card.status() after an import lets gpg learn the card's keys.)"""
+        def busy(on):
+            if btn is not None and btn.winfo_exists():
+                btn.set_text("getting key…" if on else "use this card")
+                btn.set_enabled(not on)
+
+        def gpg_out(r, err):
+            return str(err) if err else ((r.stderr or "") + (r.stdout or "")) if r else ""
+
+        def fetched(r, err):
+            busy(False)
+            if Card.export_pub(fpr):
+                return retry()
+            why = ("The card's key URL gives the key without a name or email "
+                   "(keys.openpgp.org leaves those out until the address is confirmed "
+                   "there), so GnuPG can't import it." if "no user ID" in gpg_out(r, err) else
+                   "Fetching it from the card's key URL didn't work." if info.get("url") else
+                   "The card has no key URL to fetch it from.")
+            if self._dialog("Public key not in keyring",
+                            why + "\n\nLook it up on keyserver.ubuntu.com instead? You can "
+                            "also import its .asc file in Profile & Keys.",
+                            (("Cancel", False), ("Look up", True)), tone=AM)[0]:
+                busy(True)
+                self._bg(lambda: (Card.recv_key(info.get("sig_fpr") or fpr), Card.status())[0],
+                         looked_up)
+
+        def looked_up(r, err):
+            busy(False)
+            if Card.export_pub(fpr):
+                return retry()
+            lines = [ln for ln in gpg_out(r, err).splitlines() if ln.startswith("gpg: ")]
+            self._warn("Key not found", "keyserver.ubuntu.com didn't have it either.\n\n" +
+                       "".join(ln + "\n" for ln in lines[-3:]) +
+                       "\nImport your public key's .asc file in Profile & Keys.", parent=self)
+
+        if info.get("url"):
+            busy(True)
+            self._bg(lambda: (Card.card_fetch(), Card.status())[0], fetched)
+        else:
+            fetched(None, None)
+
+    @staticmethod
+    def _fetch_problem(out, fpr):
+        """Why the card's public key still isn't in the keyring after a fetch (gpg exits 0
+        even when it skipped the key), or None if it arrived."""
+        if not fpr or Card.export_pub(fpr):
+            return None
+        if "no user ID" in out:
+            return ("The key at the card's URL has no name or email (user ID), so GnuPG "
+                    "skipped it. keys.openpgp.org leaves those out until you confirm the "
+                    "email address there.\n\nConfirm it on keys.openpgp.org, set a key URL "
+                    "that serves the whole key (e.g. from keyserver.ubuntu.com), or import "
+                    "your public key's .asc file.")
+        lines = [ln for ln in out.splitlines() if ln.startswith("gpg: ")]
+        return "The card's public key wasn't imported.\n\n" + (
+            "\n".join(lines[-4:]) or "Set a key URL on the card first.")
 
     def _card_name(self):
         sn = self._ask_string("Cardholder", "Surname:", parent=self)
@@ -3311,12 +3961,63 @@ class App(tk.Tk):
             return
         self._card_action(lambda: Card.card_set_name(sn, gn), "Cardholder name set.")
 
-    def _card_url(self):
-        url = self._ask_string("Public-key URL", "URL where your public key is published:",
-                                     parent=self)
+    def _card_url(self, info):
+        url = (self._ask_string("Public-key URL", "URL where your public key is published:",
+                                parent=self) or "").strip()
         if not url:
             return
-        self._card_action(lambda: Card.card_set_url(url), "Public-key URL set.")
+        fprs = {info.get("sig_fpr"), info.get("enc_fpr")} - {None, ""}
+
+        def checked(problem, err):
+            problem = problem or (f"Couldn't check it: {err}" if err else None)
+            if problem and not self._ask("Check the key URL",
+                                         problem + "\n\nSet it on the card anyway?", parent=self):
+                return
+            card = {}
+
+            def run():
+                r = Card.card_set_url(url)
+                card.update(Card.status())                     # read it back from the card
+                return r
+            self._card_action(run, "The card's key URL is now:\n" + url,
+                              check=lambda out: None if card.get("url") == url else
+                              "The card's key URL is still:\n" + (card.get("url") or "(none)"))
+        # the card stores any text, so check the address first (off the UI thread)
+        self._bg(lambda: self._key_url_problem(url, fprs), checked)
+
+    @staticmethod
+    def _key_url_problem(url, fprs):
+        """Why `url` won't give GnuPG this card's public key (`fprs` = the card's key
+        fingerprints), or None if it will."""
+        if not re.match(r"https?://\S+$", url, re.I):
+            return "That isn't a web address — it has to start with https://."
+        import urllib.request, tempfile
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "PGPM"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = resp.read(1 << 20)
+        except Exception as e:
+            why = getattr(e, "reason", None) or e                # e.g. "Not Found"
+            why = getattr(why, "strerror", None) or why          # e.g. an unknown host
+            code = getattr(e, "code", None)
+            return f"Couldn't download it ({why}{f', HTTP {code}' if code else ''})."
+        fd, tmp = tempfile.mkstemp(suffix=".asc")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            r = Card._run(["--with-colons", "--show-keys", tmp])   # lists, never imports
+        finally:
+            os.remove(tmp)
+        recs = [ln.split(":") for ln in (r.stdout or "").splitlines()]
+        have = {f[9] for f in recs if f[0] == "fpr" and len(f) > 9}
+        if not have:
+            return "There's no PGP public key at that address."
+        if fprs and not fprs & have:
+            return "The key at that address isn't this card's key."
+        if not any(f[0] == "uid" for f in recs):
+            return ("The key there has no name or email (user ID), so GnuPG can't import it — "
+                    "keys.openpgp.org leaves those out until you confirm the address there.")
+        return None
 
     def _card_move_key(self):
         soft = [k for k in self._secret if not k.get("on_card")]
@@ -3414,10 +4115,13 @@ class App(tk.Tk):
         self._welcome()
 
     def _recipients(self):
-        """label -> fingerprint map of public keys in the keyring (contacts first, so
-        the default pick is a person — the Encrypt button doesn't show who it is)."""
+        """label -> fingerprint map of public keys in the keyring that can still encrypt
+        (contacts first, so the default pick is a person — the Encrypt button doesn't show
+        who it is). Expired / revoked / sign-only keys are left out: gpg refuses them."""
         opts = {}
         for c in self.contacts:
+            if not c.get("can_encrypt", True):
+                continue
             label = self._shown_name(c)
             if c.get("secret"):
                 label += "  (me)"
@@ -3426,6 +4130,25 @@ class App(tk.Tk):
         if self.my_fpr and "Only me" not in opts:    # encrypt a copy only you can read
             opts["Only me"] = self.my_fpr
         return opts
+
+    def _cant_encrypt(self, fprs):
+        """Why gpg can't encrypt to one of `fprs` (it only says "Unusable public key"),
+        in plain words — or None when all of them are fine."""
+        keys = {k["fpr"]: k for k in self.contacts + self._secret}
+        for fpr in fprs:
+            k = keys.get(fpr)
+            if not k or k.get("can_encrypt", True):
+                continue
+            exp = k.get("expires")
+            why = ("was revoked" if k.get("validity") == "r" else
+                   f"expired on {exp:%Y-%m-%d}" if exp and exp < datetime.datetime.now() else
+                   "has no usable encryption subkey")
+            nm = k.get("name") or k.get("email") or k.get("keyid", "")
+            if k.get("secret"):
+                return f"Your key {nm} {why}.\n\nPick or create another key in Profile & Keys."
+            return (f"{nm}'s key {why}, so messages can't be encrypted to it.\n\n"
+                    "Import a current public key for them.")
+        return None
 
     def _load_into(self, textw):
         path = filedialog.askopenfilename(
@@ -3485,6 +4208,9 @@ class App(tk.Tk):
             recips = [fpr]
             if self.my_fpr and self.my_fpr not in recips:
                 recips.append(self.my_fpr)               # also encrypt to me
+            why = self._cant_encrypt(recips)
+            if why:
+                return self._warn("Can't encrypt", why, parent=self)
             try:
                 out = Card.encrypt(t, recips)            # no signing
             except Exception as e:
@@ -3556,8 +4282,13 @@ class App(tk.Tk):
                 return self._error("Decrypt Error", str(e), parent=self)
             txt.delete("1.0", "end"); txt.insert("1.0", text); txt.configure(fg=T1)
             if signer:
-                vi = self._asset_img("valid.png", 16, tint=GN)
-                if vi is not None:
+                g = _glyph("asset:valid.png", 16, GN)
+                vi = None if g else self._asset_img("valid.png", 16, tint=GN)
+                signer = self._fit_signer(status, " valid signature from ", signer)
+                if g is not None:                # macOS: a crisp glyph before the text
+                    status.configure(image="", text=f" valid signature from {signer}", fg=GN)
+                    self._status_icon(status, g)
+                elif vi is not None:
                     status.configure(image=vi, compound="left",
                                      text=f" valid signature from {signer}", fg=GN)
                     status._img = vi                 # keep a ref from GC
@@ -3565,6 +4296,7 @@ class App(tk.Tk):
                     status.configure(text=f"✓ valid signature from {signer}", fg=GN)
             else:
                 status.configure(image="", text="• processed (no verifiable signature)", fg=T3)
+                self._status_icon(status, None)
             self._hide_status_later(status)          # clear the line after 4 seconds
 
         def copy_out():
@@ -3586,6 +4318,24 @@ class App(tk.Tk):
         status = tk.Label(bar, text="", font=FS, bg=BK, fg=T3, anchor="e")
         status.pack(side="right", fill="x", expand=True, padx=8)
 
+    @staticmethod
+    def _fit_signer(label, prefix, signer, reserve=20):
+        """`signer` shortened so `prefix + signer` fits on the status label (`reserve` px
+        for the ✓ icon): drop the <email> first, then cut with "…". The label is anchored
+        right, so an over-long line lost its start — and the icon — instead."""
+        import tkinter.font as _tkf
+        fnt = _tkf.Font(font=label.cget("font"))
+        room = label.winfo_width() - reserve
+        if room <= 0:                              # not laid out yet
+            return signer
+        name = signer.split("<")[0].strip() or signer
+        for cand in (signer, name):
+            if fnt.measure(prefix + cand) <= room:
+                return cand
+        while len(name) > 1 and fnt.measure(prefix + name + "…") > room:
+            name = name[:-1]
+        return name.rstrip() + "…"
+
     def _hide_status_later(self, status):
         job = getattr(self, "_status_clear_job", None)
         if job:
@@ -3596,9 +4346,26 @@ class App(tk.Tk):
             try:
                 if status.winfo_exists():
                     status.configure(text="", image="")
+                    self._status_icon(status, None)
             except Exception:
                 pass
         self._status_clear_job = self.after(4000, _hide)
+
+    @staticmethod
+    def _status_icon(status, g):
+        """Show glyph `g` just before the status label's right-aligned text (None hides
+        it) — a label can't mix the icon font with the text's."""
+        ic = getattr(status, "_ic", None)
+        if g is None:
+            if ic is not None:
+                ic.place_forget()
+            return
+        if ic is None:
+            ic = status._ic = tk.Label(status, bg=status.cget("bg"), bd=0, padx=0, pady=0)
+        ic.configure(text=g.char, font=g.font, fg=g.color)
+        import tkinter.font as _tkf
+        w = _tkf.Font(font=status.cget("font")).measure(status.cget("text"))
+        ic.place(relx=1.0, x=-(w + 1), rely=0.5, anchor="e")   # the label's 1px padx
 
     # ── Contact key viewer ────────────────────────────────────────
     def _show_contact_key(self, contact):
@@ -3646,7 +4413,7 @@ class App(tk.Tk):
         # copy button in the box's top-right corner (above the text, never scrolls)
         cpy = _icon_widget(pcv, 18, "copy", cp, fg=T3, hover=T1, pbg=INP, tip="Copy public key")
         cpy.place(relx=1.0, x=-10, y=10, anchor="ne")
-        pcv.bind("<Configure>", lambda _: cpy.lift(), add="+")
+        pcv.bind("<Configure>", lambda _: tk.Misc.tkraise(cpy), add="+")
 
         # actions for this key live in its tab (copy + delete sit on the box / header)
         acts = tk.Frame(f, bg=BK); acts.pack(anchor="w", pady=(10, 0))
@@ -3740,6 +4507,8 @@ class App(tk.Tk):
                     pass
             self._drop_targets = live
             self._drop_rects = rects
+            if IS_MAC:                                  # for the drag callbacks' coordinates
+                self._drop_win = (self.winfo_rootx(), self.winfo_rooty(), self.winfo_height())
 
             want = getattr(self, "_drop_hi_want", None)
             cv = None
@@ -3800,6 +4569,109 @@ class App(tk.Tk):
         except Exception:
             try: self._enable_drop_legacy()
             except Exception: pass
+
+    def _enable_drop_mac(self):
+        """macOS: accept a file dragged from Finder onto a message field. The window's Tk
+        content view is registered for file drags and given NSDraggingDestination methods
+        through the Objective-C runtime. Like the OLE callbacks on Windows they never touch
+        Tk: they hit-test the cached field rects and set flags, _drop_poll does the UI."""
+        import ctypes
+        from ctypes import c_void_p, c_char_p, c_ulong, c_bool, c_byte, c_double
+        try:
+            objc = ctypes.cdll.LoadLibrary("/usr/lib/libobjc.A.dylib")
+            ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AppKit.framework/AppKit")
+            objc.objc_getClass.restype = c_void_p
+            objc.objc_getClass.argtypes = [c_char_p]
+            objc.sel_registerName.restype = c_void_p
+            objc.sel_registerName.argtypes = [c_char_p]
+            objc.class_addMethod.restype = c_bool
+            objc.class_addMethod.argtypes = [c_void_p, c_void_p, c_void_p, c_char_p]
+
+            class NSPoint(ctypes.Structure):
+                _fields_ = [("x", c_double), ("y", c_double)]
+
+            def send(obj, name, *args, restype=c_void_p, argtypes=()):
+                f = ctypes.CFUNCTYPE(restype, c_void_p, c_void_p, *argtypes)(
+                    ("objc_msgSend", objc))
+                return f(obj, objc.sel_registerName(name.encode()), *args)
+
+            def cls(name):
+                return objc.objc_getClass(name.encode())
+
+            def nsstr(text):
+                return send(cls("NSString"), "stringWithUTF8String:", text.encode(),
+                            argtypes=(c_char_p,))
+
+            def pystr(o):
+                return ctypes.string_at(send(o, "UTF8String")).decode() if o else None
+
+            wins = send(send(cls("NSApplication"), "sharedApplication"), "windows")
+            win = next((w for w in (send(wins, "objectAtIndex:", i, argtypes=(c_ulong,))
+                                    for i in range(send(wins, "count", restype=c_ulong)))
+                        if pystr(send(w, "title")) == self.title()), None)
+            if not win:
+                raise RuntimeError("main window not found")
+            view = send(win, "contentView")
+            FILE_URL = "public.file-url"
+            send(view, "registerForDraggedTypes:",
+                 send(cls("NSArray"), "arrayWithObject:", nsstr(FILE_URL), argtypes=(c_void_p,)),
+                 restype=None, argtypes=(c_void_p,))
+
+            def where(info):                    # drag point → Tk screen coordinates
+                p = send(info, "draggingLocation", restype=NSPoint)   # window coords, y up
+                x0, y0, h = self._drop_win
+                return x0 + int(p.x), y0 + h - int(p.y)
+
+            def over(this, _cmd, info):         # draggingEntered: / draggingUpdated:
+                try:
+                    hit = self._drop_hit(*where(info))
+                    self._drop_hi_want = hit
+                    return 1 if hit is not None else 0           # Copy / None (refused)
+                except Exception:
+                    return 0
+
+            def exited(this, _cmd, info):
+                self._drop_hi_want = None
+
+            def perform(this, _cmd, info):      # performDragOperation:
+                try:
+                    sx, sy = where(info)
+                    items = send(send(info, "draggingPasteboard"), "pasteboardItems")
+                    path = None
+                    if items and send(items, "count", restype=c_ulong):
+                        item = send(items, "objectAtIndex:", 0, argtypes=(c_ulong,))
+                        s = send(item, "stringForType:", nsstr(FILE_URL), argtypes=(c_void_p,))
+                        url = send(cls("NSURL"), "URLWithString:", s, argtypes=(c_void_p,)) \
+                            if s else None
+                        url = send(url, "filePathURL") if url else None   # Finder: file-ref URLs
+                        path = pystr(send(url, "path")) if url else None
+                    self._drop_hi_want = None
+                    self._drop_pending = (path, sx, sy)                # _drop_poll loads it
+                    return 1 if path else 0
+                except Exception:
+                    return 0
+
+            OP = ctypes.CFUNCTYPE(c_ulong, c_void_p, c_void_p, c_void_p)
+            NONE = ctypes.CFUNCTYPE(None, c_void_p, c_void_p, c_void_p)
+            YES = ctypes.CFUNCTYPE(c_byte, c_void_p, c_void_p, c_void_p)
+            imps = {"draggingEntered:": (OP(over), b"Q@:@"),
+                    "draggingUpdated:": (OP(over), b"Q@:@"),
+                    "draggingExited:": (NONE(exited), b"v@:@"),
+                    "prepareForDragOperation:": (YES(lambda this, _cmd, info: 1), b"c@:@"),
+                    "performDragOperation:": (YES(perform), b"c@:@")}
+            vcls = send(view, "class")
+            for name, (imp, types) in imps.items():
+                objc.class_addMethod(vcls, objc.sel_registerName(name.encode()),
+                                     ctypes.cast(imp, c_void_p), types)
+            self._mac_drop = imps                   # keep the callbacks alive (GC = crash)
+        except Exception as e:
+            _log(f"drag-drop: macOS setup failed {e!r}")
+            return
+        self._drop_hi = None
+        if not getattr(self, "_drop_poll_on", False):
+            self._drop_poll_on = True
+            self.after(80, self._drop_poll)
+        _log("drag-drop: macOS file drop registered")
 
     def _enable_drop_ole(self):
         import ctypes
@@ -4417,7 +5289,7 @@ class App(tk.Tk):
         badge = None
         st = self._key_status(contact)         # expired / expires-soon badge
         if st:
-            badge = tk.Label(mid, text="⚠ " + st[0], font=(UI, 8), bg=rbg, fg=st[1], anchor="w")
+            badge = tk.Label(mid, text="⚠ " + st[0], font=(UI, _pt(8)), bg=rbg, fg=st[1], anchor="w")
             badge.pack(anchor="w")
 
         # key info (delete lives in its tab); packed before `mid` so a long name gets
@@ -4770,6 +5642,9 @@ class App(tk.Tk):
         recips = [fpr]
         if self.my_fpr and self.my_fpr not in recips:
             recips.append(self.my_fpr)               # also encrypt to me (keep a readable copy)
+        why = self._cant_encrypt(recips)
+        if why:
+            self._warn("Can't encrypt", why, parent=self); return
         try:
             enc = Card.encrypt(text, recips)         # no signing
         except Exception as e:
