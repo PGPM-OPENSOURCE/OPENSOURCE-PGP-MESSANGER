@@ -1625,6 +1625,15 @@ def _custom_mask(kind):
                 im = Image.open(path).convert("RGBA")
                 bbox = im.getchannel("A").getbbox()
                 mask = (im.crop(bbox) if bbox else im).getchannel("A")
+                # Windows: a drawing whose main fill is semi-transparent (the open-envelope
+                # icon's body is 63% opaque) renders darker than its siblings once tinted —
+                # lift its most common opacity level to fully solid (macOS left as is)
+                if IS_WIN:
+                    hist = mask.histogram()
+                    fill = max(range(1, 256), key=lambda v: hist[v])
+                    if fill < 250:
+                        k = 255.0 / fill
+                        mask = mask.point(lambda v: min(255, round(v * k)))
                 break
             except Exception:
                 mask = None
