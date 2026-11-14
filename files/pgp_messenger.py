@@ -56,8 +56,9 @@ def _resource(name):
 
 
 def _register_fonts():
-    """Load bundled Inter fonts into this process (Windows) so Tk can use them
-    without a system install. Returns True if at least one face registered."""
+    """Load the bundled Outfit fonts (fonts/, OFL) into this process (Windows) so Tk can use
+    them without a system install; Medium and SemiBold show up as families of their own.
+    Returns True if at least one face registered."""
     if not IS_WIN:
         return False
     added = 0
@@ -66,14 +67,46 @@ def _register_fonts():
         FR_PRIVATE = 0x10
         gdi = ctypes.windll.gdi32
         gdi.AddFontResourceExW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_void_p]
-        for fn in ("Inter-Regular.ttf", "Inter-Medium.ttf",
-                   "Inter-SemiBold.ttf", "Inter-Bold.ttf"):
+        for fn in ("Outfit-Regular.ttf", "Outfit-Medium.ttf",
+                   "Outfit-SemiBold.ttf", "Outfit-Bold.ttf"):
             p = _resource(os.path.join("fonts", fn))
             if os.path.exists(p):
                 added += gdi.AddFontResourceExW(p, FR_PRIVATE, None)
     except Exception:
         return False
     return added > 0
+
+
+def _font_usable(face):
+    """True if Windows has the font family `face` installed and GDI (so Tk) really opens it at
+    normal width. GDI keeps only 31 characters of a family name, so a longer one ("... Medium
+    Comp") can collide with this one and GDI may open the compressed cut instead."""
+    if not IS_WIN:
+        return False
+    try:
+        import ctypes, struct
+        vp = ctypes.c_void_p
+        gdi, user = ctypes.WinDLL("gdi32"), ctypes.WinDLL("user32")   # own copies: argtypes stay local
+        user.GetDC.restype = gdi.CreateFontW.restype = gdi.SelectObject.restype = vp
+        user.GetDC.argtypes, user.ReleaseDC.argtypes = [vp], [vp, vp]
+        gdi.CreateFontW.argtypes = [ctypes.c_int] * 13 + [ctypes.c_wchar_p]
+        gdi.SelectObject.argtypes, gdi.DeleteObject.argtypes = [vp, vp], [vp]
+        gdi.GetTextFaceW.argtypes = [vp, ctypes.c_int, ctypes.c_wchar_p]
+        gdi.GetFontData.argtypes = [vp, ctypes.c_uint32, ctypes.c_uint32, vp, ctypes.c_uint32]
+        gdi.GetFontData.restype = ctypes.c_uint32
+        dc = user.GetDC(None)
+        font = gdi.CreateFontW(0, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0, face)   # 1 = DEFAULT_CHARSET
+        old = gdi.SelectObject(dc, font)
+        got = ctypes.create_unicode_buffer(64)
+        gdi.GetTextFaceW(dc, 64, got)              # a substitute's name when `face` is missing
+        os2 = ctypes.create_string_buffer(8)       # OS/2 table: version, avg width, weight, width class
+        n = gdi.GetFontData(dc, struct.unpack("<I", b"OS/2")[0], 0, os2, 8)
+        gdi.SelectObject(dc, old)
+        gdi.DeleteObject(font)
+        user.ReleaseDC(None, dc)
+        return got.value.lower() == face.lower() and n == 8 and os2.raw[6:8] == b"\x00\x05"
+    except Exception:
+        return False
 
 # ─── Palette ──────────────────────────────────────────────────────
 BK    = "#0d0d0d"   # main bg
@@ -114,6 +147,40 @@ FB   = (UI, _pt(10), "bold")
 FS   = (UI, _pt(9))
 FMO  = (MON, _pt(9))
 FBUB = (UI, _pt(9), "bold")
+FBTN, FBTN_B = FS, FBUB     # button labels
+PANEL = HDR                 # segmented bars, cards
+SEL   = "#181818"           # selected contact row
+FILL, FILL_HI = INP, HOV    # a button on its own / hovered
+LINE  = DIV                 # outline of panels, cards and segmented bars
+RAD_ENTRY, RAD_TEXT, RAD_KEY, RAD_CARD = 12, 14, 13, 14   # entry, text box, key card, dialog
+
+# ─── Windows look ─────────────────────────────────────────────────
+# The PnL-tracker style in PGPM's own neutral greys (the palette above): flat panels with
+# outlines, the tracker's typeface in sentence case, and each row of buttons drawn as one
+# segmented bar (_seg_bar) of same-coloured quiet segments. macOS keeps the look above.
+if IS_WIN:
+    SEL, FILL, FILL_HI = "#262626", "#262626", "#303030"     # lit: tab, button, selected row
+    RAD_ENTRY = RAD_TEXT = RAD_CARD = 6
+    RAD_KEY = 4
+    # Typeface: SFT Schrifted Sans (the tracker's own) when it's installed on this PC - its
+    # licence doesn't let us ship it - else the bundled Outfit (OFL). A weight GDI can't open
+    # cleanly falls back: Medium to Regular, DemiBold to Bold.
+    _med = _semi = None
+    for _fam in ("SFT Schrifted Sans", "SFT Schrifted Sans TRIAL"):
+        if _font_usable(_fam):
+            UI = _fam
+            _med = _fam + " Medium" if _font_usable(_fam + " Medium") else _fam
+            _semi = _fam + " DemiBd" if _font_usable(_fam + " DemiBd") else None
+            break
+    else:
+        if _register_fonts():
+            UI, _med, _semi = "Outfit", "Outfit Medium", "Outfit SemiBold"
+    FM   = (UI, 10)
+    FB   = (_semi, 10) if _semi else (UI, 10, "bold")
+    FS   = (UI, 9)
+    FBUB = (_semi, 9) if _semi else (UI, 9, "bold")
+    FBTN = (_med, 10) if _med else FS
+    FBTN_B = (_semi, 10) if _semi else FBUB
 
 _DATA     = os.path.join(os.path.expanduser("~"), ".pgp_messenger")
 _CONTACTS = os.path.join(_DATA, "contacts.json")
@@ -912,6 +979,8 @@ class ScrollFrame(tk.Frame):
 BTN_H = 34
 RAD_W = 16    # corner radius for inputs / search pill (near-pill)
 RAD_BTN = 8   # corner radius for buttons (a little less curved than inputs)
+if IS_WIN:
+    RAD_W = RAD_BTN = 6        # the Windows look: squarer fields and buttons
 RAD_WIN = 24  # corner diameter for the app window (≈12px radius, Win11-like)
 APP_W = 920
 APP_H = 540 if IS_WIN else 510   # Windows' 540 includes its 30px custom title bar
@@ -922,19 +991,19 @@ GITHUB_REPO = "PGPM-OPENSOURCE/OPENSOURCE-PGP-MESSANGER"
 GPG_DIST, GPG_URL = (("GPG Suite", "https://gpgtools.org") if IS_MAC else
                      ("Gpg4win", "https://www.gpg4win.org"))
 
-def _pill_label(cv, cx, text, font, img, fill=WT):
-    """Draw `img` + `text` centred as one group at x=cx on a BTN_H-tall button canvas;
+def _pill_label(cv, cx, text, font, img, fill=WT, h=BTN_H):
+    """Draw `img` + `text` centred as one group at x=cx on an h-tall button canvas;
     returns the text item (None when there's no text)."""
     if img is not None:
         cv._icon = img
     if img is not None and not text:
-        _put_icon(cv, cx, BTN_H // 2, img)
+        _put_icon(cv, cx, h // 2, img)
         return None
     if img is None:
-        return cv.create_text(cx, BTN_H // 2 + 1, text=text, font=font, fill=fill)
+        return cv.create_text(cx, h // 2 + 1, text=text, font=font, fill=fill)
     iids = _put_icon(cv, 0, 0, img)
     tid = cv.create_text(0, 0, text=text, font=font, fill=fill, anchor="w")
-    cv._pill = (cx, font, iids, tid, img)
+    cv._pill = (cx, font, iids, tid, img, h)
     _pill_recenter(cv)
     return tid
 
@@ -944,37 +1013,39 @@ def _pill_recenter(cv):
     p = getattr(cv, "_pill", None)
     if p:
         import tkinter.font as _tkf
-        cx, font, iids, tid, img = p
+        cx, font, iids, tid, img, h = p
         iw = img.width()
         x0 = cx - (iw + 7 + _tkf.Font(font=font).measure(cv.itemcget(tid, "text"))) // 2
-        _move_icon(cv, iids, img, x0 + iw // 2, BTN_H // 2)
-        cv.coords(tid, x0 + iw + 7, BTN_H // 2 + 1)
+        _move_icon(cv, iids, img, x0 + iw // 2, h // 2)
+        cv.coords(tid, x0 + iw + 7, h // 2 + 1)
 
 
 def _make_btn(parent, text, command, w=150, pbg=None, bold=False, icon=None):
-    """Rounded button with an uppercase label; `icon` (a kind name or a ready image) sits
-    before the label, or alone when `text` is empty."""
+    """Rounded button with an uppercase label (Windows: a filled block in sentence case);
+    `icon` (a kind name or a ready image) sits before the label, or alone when `text` is empty."""
     pbg = pbg or parent.cget("bg")
     cv = tk.Canvas(parent, width=w, height=BTN_H, bg=pbg,
                    highlightthickness=0, bd=0, takefocus=0)
-    img_n = _rrect_img(w, BTN_H, RAD_BTN, INP, pbg, outline=DIV) if _HAS_PIL else None
-    img_h = _rrect_img(w, BTN_H, RAD_BTN, HOV, pbg, outline=DIV) if _HAS_PIL else None
+    edge = None if IS_WIN else DIV
+    shown = (lambda t: t) if IS_WIN else str.upper
+    img_n = _rrect_img(w, BTN_H, RAD_BTN, FILL, pbg, outline=edge) if _HAS_PIL else None
+    img_h = _rrect_img(w, BTN_H, RAD_BTN, FILL_HI, pbg, outline=edge) if _HAS_PIL else None
     if img_n is not None:
         cv._imgs = (img_n, img_h)
         bgid = cv.create_image(0, 0, image=img_n, anchor="nw")
     else:
-        bgid = _round_rect(cv, 1, 1, w - 1, BTN_H - 1, RAD_BTN, fill=INP, outline=DIV)
+        bgid = _round_rect(cv, 1, 1, w - 1, BTN_H - 1, RAD_BTN, fill=FILL, outline=edge or "")
     img = None
     if icon and _HAS_PIL:
         img = _render_icon(icon, 18, WT) if isinstance(icon, str) else icon
-    tid = _pill_label(cv, w // 2, text.upper(), FBUB if bold else FS, img)
+    tid = _pill_label(cv, w // 2, shown(text), FBTN_B if bold else FBTN, img)
     st = {"on": True}
 
     def _setbg(hover):
         if img_n is not None:
             cv.itemconfigure(bgid, image=(img_h if hover else img_n))
         else:
-            cv.itemconfigure(bgid, fill=(HOV if hover else INP))
+            cv.itemconfigure(bgid, fill=(FILL_HI if hover else FILL))
 
     def click(_=None):
         if st["on"]:
@@ -999,7 +1070,7 @@ def _make_btn(parent, text, command, w=150, pbg=None, bold=False, icon=None):
 
     def _set_text(t):
         if tid:
-            cv.itemconfigure(tid, text=t.upper())
+            cv.itemconfigure(tid, text=shown(t))
             _pill_recenter(cv)                  # keeps an icon + label centred
     cv.set_text = _set_text
     def _set_enabled(on):
@@ -1012,31 +1083,54 @@ def _make_btn(parent, text, command, w=150, pbg=None, bold=False, icon=None):
 
 # ─── Modern rounded dropdown with a styled popup list ─────────────
 def _split_btn(parent, text, command, labels, default=None, pbg=None, w=130, tip=None,
-               icon=None):
+               icon=None, h=None):
     """A button with a chevron segment in the same box: the left part runs `command`,
     the chevron opens a pick list of `labels`; the pick is kept in `cv._var` (✓ in
     the list). `tip(var_value)` gives the main part's hover text; `icon` (an image)
-    sits before the label."""
+    sits before the label. Windows: drawn as a quiet segment of a segmented bar, the same
+    colours as the bar's other segments; `icon` is then a callable colour -> image, and the
+    label or the chevron lights up with its part under the pointer."""
     pbg = pbg or parent.cget("bg")
+    H = h or BTN_H
     CW = 30                                             # chevron segment width
     var = tk.StringVar(value=default or (labels[0] if labels else ""))
-    cv = tk.Canvas(parent, width=w, height=BTN_H, bg=pbg,
+    cv = tk.Canvas(parent, width=w, height=H, bg=pbg,
                    highlightthickness=0, bd=0, takefocus=0, cursor="hand2")
     state = {"pop": None, "hover": None}
-    imgs = {h: _split_img(w, BTN_H, CW, pbg, h) for h in (None, "main", "chev")} \
+    imgs = {hv: _split_img(w, H, CW, pbg, hv) for hv in (None, "main", "chev")} \
         if _HAS_PIL else None
+    tid = chev = None                                   # Windows: items recoloured on hover
     if imgs:
         cv._imgs = imgs
         bgid = cv.create_image(0, 0, image=imgs[None], anchor="nw")
-        cv._chev = _render_icon("chevdown", 12, T2)
-        _put_icon(cv, w - CW // 2, BTN_H // 2, cv._chev)
+        if IS_WIN:
+            cv._chev = {c: _render_icon("chevdown", 12, c) for c in (T2, T1)}
+            chev = _put_icon(cv, w - CW // 2, H // 2, cv._chev[T2])[0]
+        else:
+            cv._chev = _render_icon("chevdown", 12, T2)
+            _put_icon(cv, w - CW // 2, H // 2, cv._chev)
     else:
-        bgid = _round_rect(cv, 1, 1, w - 1, BTN_H - 1, RAD_BTN, fill=INP, outline=DIV)
-        cv.create_text(w - CW // 2, BTN_H // 2, text="▾", fill=T2)
-    _pill_label(cv, (w - CW) // 2, text.upper(), FS, icon if _HAS_PIL else None)
+        bgid = _round_rect(cv, 1, 1, w - 1, H - 1, RAD_BTN, fill=INP, outline=DIV)
+        cv.create_text(w - CW // 2, H // 2, text="▾", fill=T2)
+    if IS_WIN:
+        cv._icons = {c: icon(c) for c in (T2, T1)} if icon and _HAS_PIL else None
+        tid = _pill_label(cv, (w - CW) // 2, text, FBTN, cv._icons and cv._icons[T2],
+                          fill=T2, h=H)
+    else:
+        _pill_label(cv, (w - CW) // 2, text.upper(), FBTN, icon if _HAS_PIL else None, h=H)
 
     def part(x):
         return "chev" if x >= w - CW else "main"
+
+    def recolour(h):                                    # Windows: T2 at rest, T1 under the pointer
+        c = T1 if h == "main" else T2
+        if tid:
+            cv.itemconfigure(tid, fill=c)
+        pill = getattr(cv, "_pill", None)
+        if cv._icons and pill:
+            cv.itemconfigure(pill[2][0], image=cv._icons[c])
+        if chev:
+            cv.itemconfigure(chev, image=cv._chev[T1 if h == "chev" else T2])
 
     def set_hover(h):
         if h != state["hover"]:
@@ -1045,6 +1139,8 @@ def _split_btn(parent, text, command, labels, default=None, pbg=None, w=130, tip
                 cv.itemconfigure(bgid, image=imgs[h])
             else:
                 cv.itemconfigure(bgid, fill=HOV if h else INP)
+            if IS_WIN:
+                recolour(h)
 
     def close(_=None):
         b = state.get("bind")
@@ -1135,6 +1231,136 @@ def _split_btn(parent, text, command, labels, default=None, pbg=None, w=130, tip
     return cv
 
 
+# ─── Segmented button bar (the Windows look) ──────────────────────
+SEG_H, SEG_PAD, SEG_GAP, SEG_RAD = 40, 4, 2, 4   # bar height, inner padding, gap, corners
+SEG_TINT = HOV                                   # a quiet segment under the pointer
+
+
+def _seg_bar(parent, items, pbg=None, width=None):
+    """A row of buttons drawn as ONE segmented bar, like a tab strip: a dark rounded box whose
+    segments all look the same and stay quiet until hovered; lit=True fills a segment to mark
+    a selection (the sidebar tab strip's open tab), never an action.
+    `items` are dicts: text, command, and optionally icon (callable colour -> image), w (fixed
+    px), lit, danger, fg (resting colour), tip, widget (callable(canvas, w, h) -> widget shown
+    in that segment, e.g. a split button). The bar is `width` px wide, or follows its own size when packed with
+    fill="x"; segments without w share the rest equally. Hover / lit changes recolour items
+    in place — nothing is rebuilt, so nothing flickers."""
+    import tkinter.font as _tkf
+    pbg = pbg or parent.cget("bg")
+    fnt = _tkf.Font(font=FBTN)
+    sh = SEG_H - 2 * SEG_PAD
+    cv = tk.Canvas(parent, width=width or 10, height=SEG_H, bg=pbg,
+                   highlightthickness=0, bd=0, takefocus=0)
+    segs = [dict(it, hover=False, enabled=True, x0=0, x1=0, imgs={}, win=None) for it in items]
+    st = {"W": 0, "hover": None}
+    box = cv.create_image(0, 0, anchor="nw")
+    for s in segs:
+        s["hl"] = cv.create_image(0, SEG_PAD, anchor="nw", state="hidden")
+        s["ic"] = cv.create_image(0, SEG_H // 2, anchor="w") if s.get("icon") else None
+        s["tx"] = (cv.create_text(0, SEG_H // 2 + 1, text=s["text"], font=FBTN, anchor="w")
+                   if s.get("text") else None)
+
+    def look(s):                                 # (text/icon colour, highlight fill or None)
+        if not s["enabled"]:
+            return T4, None
+        if s.get("lit"):
+            return WT, (FILL_HI if s["hover"] else FILL)
+        fg = RD if s.get("danger") else (T1 if s["hover"] else s.get("fg", T2))
+        return fg, (SEG_TINT if s["hover"] else None)
+
+    def icon(s, colour):
+        if colour not in s["imgs"]:
+            s["imgs"][colour] = s["icon"](colour)
+        return s["imgs"][colour]
+
+    def paint(s):
+        fg, fill = look(s)
+        sw = s["x1"] - s["x0"]
+        if fill and sw > 0:
+            cv.itemconfigure(s["hl"], image=_rrect_img(sw, sh, SEG_RAD, fill, PANEL), state="normal")
+        else:
+            cv.itemconfigure(s["hl"], state="hidden")
+        if s["tx"]:
+            cv.itemconfigure(s["tx"], fill=fg)
+        if s["ic"]:
+            cv.itemconfigure(s["ic"], image=icon(s, fg))
+
+    def layout(W):
+        if W <= 2 * SEG_PAD or not _HAS_PIL:
+            return
+        st["W"] = W
+        cv.itemconfigure(box, image=_rrect_img(W, SEG_H, SEG_RAD, PANEL, pbg, outline=LINE))
+        free = W - 2 * SEG_PAD - SEG_GAP * (len(segs) - 1) - sum(s.get("w") or 0 for s in segs)
+        flex = sum(1 for s in segs if not s.get("w"))
+        x = SEG_PAD
+        for s in segs:
+            sw = s.get("w") or free / max(1, flex)
+            s["x0"], s["x1"] = round(x), round(x + sw)
+            x += sw + SEG_GAP
+            cv.coords(s["hl"], s["x0"], SEG_PAD)
+            iw = icon(s, look(s)[0]).width() if s["ic"] else 0
+            tw = fnt.measure(cv.itemcget(s["tx"], "text")) if s["tx"] else 0
+            gx = (s["x0"] + s["x1"]) / 2 - (iw + (7 if iw and tw else 0) + tw) / 2
+            if s["ic"]:
+                cv.coords(s["ic"], round(gx), SEG_H // 2)
+            if s["tx"]:
+                cv.coords(s["tx"], round(gx + iw + (7 if iw else 0)), SEG_H // 2 + 1)
+            if s.get("widget"):
+                if s["win"] is None:
+                    s["win"] = cv.create_window(0, 0, anchor="nw",
+                                                window=s["widget"](cv, s["x1"] - s["x0"], sh))
+                cv.coords(s["win"], s["x0"], SEG_PAD)
+                cv.itemconfigure(s["win"], width=s["x1"] - s["x0"], height=sh)
+            paint(s)
+
+    def seg_at(x):
+        for i, s in enumerate(segs):
+            if s["x0"] <= x < s["x1"] and not s.get("widget"):
+                return i
+        return None
+
+    def set_hover(i):
+        if i == st["hover"]:
+            return
+        for j in (st["hover"], i):
+            if j is not None:
+                segs[j]["hover"] = j == i
+                paint(segs[j])
+        st["hover"] = i
+        cv.configure(cursor="hand2" if i is not None and segs[i]["enabled"] else "")
+
+    def click(e):
+        i = seg_at(e.x)
+        if i is not None and segs[i]["enabled"] and segs[i].get("command"):
+            segs[i]["command"]()
+
+    def set_lit(i):                              # e.g. the tab that is open (None = none)
+        for j, s in enumerate(segs):
+            if bool(s.get("lit")) != (j == i):
+                s["lit"] = j == i
+                paint(s)
+
+    def set_enabled(i, on):
+        segs[i]["enabled"] = on
+        paint(segs[i])
+
+    def set_text(i, text):
+        if segs[i]["tx"]:
+            cv.itemconfigure(segs[i]["tx"], text=text)
+            layout(st["W"])                      # re-centre the icon + label
+
+    cv.bind("<Motion>", lambda e: set_hover(seg_at(e.x)))
+    cv.bind("<Leave>", lambda e: set_hover(None))
+    cv.bind("<Button-1>", click)
+    cv.bind("<Configure>", lambda e: layout(e.width) if e.width != st["W"] else None)
+    if any(s.get("tip") for s in segs):          # after the binds above (they'd replace its hooks)
+        _attach_tip(cv, lambda: segs[st["hover"]].get("tip", "") if st["hover"] is not None else "")
+    if width:
+        layout(width)
+    cv.set_lit, cv.set_enabled, cv.set_text = set_lit, set_enabled, set_text
+    return cv
+
+
 # ─── Rounded input box matching button height ─────────────────────
 def _make_input(parent, placeholder="", pbg=None):
     pbg = pbg or parent.cget("bg")
@@ -1213,7 +1439,7 @@ def _make_entry(parent, var=None, bg=INP, pbg=None, show=""):
         w = cv.winfo_width()
         if w <= 1:
             return
-        _round_bg(cv, bg, 12, outline=DIV)
+        _round_bg(cv, bg, RAD_ENTRY, outline=DIV)
         cv.coords(win, 14, 17)
         cv.itemconfig(win, width=w - 28, height=22)
     cv.bind("<Configure>", redraw)
@@ -1231,7 +1457,7 @@ def _round_text(parent, height_px=None, font=FMO, fg=T2, pbg=None):
     txt = tk.Text(cv, font=font, bg=INP, fg=fg, insertbackground=T1,
                   relief="flat", bd=0, highlightthickness=0, wrap="word")
     win = cv.create_window(0, 0, window=txt, anchor="nw")
-    PAD, RAD = 12, 14
+    PAD, RAD = 12, RAD_TEXT
     cv._outline = DIV            # current border colour (turns white while a file hovers)
 
     def redraw(_=None):
@@ -1286,17 +1512,20 @@ def _split_img(w, h, cw, bg, hover=None, ss=3):
     if img is not None:
         return img
     W, H, X = w * ss, h * ss, (w - cw) * ss
-    box, rad = [0, 0, W - 1, H - 1], RAD_BTN * ss
+    # Windows: a quiet segment of a segmented bar (no fill until hovered); else an outlined box
+    base, lit_c, r, div = (bg, SEG_TINT, SEG_RAD, LINE) if IS_WIN else (INP, HOV, RAD_BTN, DIV)
+    box, rad = [0, 0, W - 1, H - 1], r * ss
     im = Image.new("RGB", (W, H), bg)
-    ImageDraw.Draw(im).rounded_rectangle(box, radius=rad, fill=INP)
+    ImageDraw.Draw(im).rounded_rectangle(box, radius=rad, fill=base)
     if hover:
         lit = Image.new("RGB", (W, H), bg)
-        ImageDraw.Draw(lit).rounded_rectangle(box, radius=rad, fill=HOV)
+        ImageDraw.Draw(lit).rounded_rectangle(box, radius=rad, fill=lit_c)
         seg = (0, 0, X, H) if hover == "main" else (X, 0, W, H)
         im.paste(lit.crop(seg), seg[:2])
     d = ImageDraw.Draw(im)
-    d.rounded_rectangle(box, radius=rad, outline=DIV, width=ss)
-    d.line([(X, 7 * ss), (X, H - 7 * ss)], fill=DIV, width=ss)
+    if not IS_WIN:
+        d.rounded_rectangle(box, radius=rad, outline=DIV, width=ss)
+    d.line([(X, 7 * ss), (X, H - 7 * ss)], fill=div, width=ss)
     img = ImageTk.PhotoImage(im.resize((w, h), Image.LANCZOS))
     _RRECT_CACHE[key] = img
     return img
@@ -2146,10 +2375,13 @@ def _attach_tip(widget, text):
     def show():
         if st["win"] is not None:
             return
+        tip = text() if callable(text) else text
+        if not tip:                                      # e.g. a bar segment without a tip
+            return
         t = tk.Toplevel(widget)
         t.overrideredirect(True)
         t.configure(bg=DIV)
-        tk.Label(t, text=text() if callable(text) else text, font=(UI, _pt(8)), bg="#202022",
+        tk.Label(t, text=tip, font=(UI, _pt(8)), bg="#202022",
                  fg=T1, padx=8, pady=3).pack(padx=1, pady=1)
         t.update_idletasks()
         x = widget.winfo_rootx() + widget.winfo_width() // 2 - t.winfo_width() // 2
@@ -2822,14 +3054,25 @@ class App(tk.Tk):
         # 220px sidebar), centred on the same line as the panels' button rows
         tk.Frame(self._sb_frame, bg=DIV, height=1).pack(side="bottom", fill="x")
         tools = tk.Frame(self._sb_frame, bg=SBG)
-        tools.pack(side="bottom", fill="x", pady=(10, 13))
-        # dim like the search icon; bright only on hover or while their tab is open
+        TOOLS = (("plus",    "add",     self._open_add_contact, "Add contact"),
+                 ("encrypt", "encrypt", self._open_encrypt,     "Sign / Encrypt"),
+                 ("verify",  "decrypt", self._open_decrypt,     "Decrypt / Verify"),
+                 ("usbkey",  "card",    self._open_card,        "Smartcard / Keycard"))
         self._tool_icons = {}
-        for i, (kind, view, cmd, tip) in enumerate((
-                ("plus",    "add",     self._open_add_contact, "Add contact"),
-                ("encrypt", "encrypt", self._open_encrypt,     "Sign / Encrypt"),
-                ("verify",  "decrypt", self._open_decrypt,     "Decrypt / Verify"),
-                ("usbkey",  "card",    self._open_card,        "Smartcard / Keycard"))):
+        if IS_WIN:
+            # the Windows look: one tab strip, the open tab lit (bottom in line with the
+            # panels' button bars, 12px above the window edge)
+            tools.pack(side="bottom", fill="x", padx=12, pady=(10, 11))
+            self._tool_views = [view for _, view, _, _ in TOOLS]
+            self._tool_bar = _seg_bar(tools, [
+                dict(icon=lambda c, k=kind: _render_icon(k, 22, c), fg=T3, tip=tip,
+                     command=lambda v=view, c=cmd: self._show(v, c))
+                for kind, view, cmd, tip in TOOLS], pbg=SBG)
+            self._tool_bar.pack(fill="x")
+        else:
+            tools.pack(side="bottom", fill="x", pady=(10, 13))
+        # dim like the search icon; bright only on hover or while their tab is open
+        for i, (kind, view, cmd, tip) in enumerate(() if IS_WIN else TOOLS):
             ic = _icon_widget(tools, 30, kind, lambda v=view, c=cmd: self._show(v, c),
                               fg=T3, hover=T2, tip=tip, pad=0)   # exactly 30px, no padding
             ic.pack(side="left", padx=(20, 0))
@@ -2883,7 +3126,12 @@ class App(tk.Tk):
 
     def _sync_tool_icons(self):
         """Light up the toolbar icon of the open tab (and one under the pointer);
-        the others stay dim."""
+        the others stay dim. (Windows: the open tab is the lit segment of the tab strip.)"""
+        if getattr(self, "_tool_bar", None) is not None:
+            view = getattr(self, "_view", None)
+            self._tool_bar.set_lit(self._tool_views.index(view) if view in self._tool_views
+                                   else None)
+            return
         try:
             under = self.winfo_containing(*self.winfo_pointerxy())
         except Exception:
@@ -3007,7 +3255,7 @@ class App(tk.Tk):
         self._gen_pass = tk.StringVar()
         _make_entry(gr, self._gen_pass, show="•")
 
-        self._gen_btn = _make_btn(gr, "generate  (rsa 4096)", self._generate_key, w=200,
+        self._gen_btn = _make_btn(gr, "Generate  (RSA 4096)", self._generate_key, w=200,
                                   icon=_icon_full("generate", 16, T2))
         self._gen_btn.pack(anchor="w", pady=(10, 0))
 
@@ -3021,10 +3269,16 @@ class App(tk.Tk):
         scroll.bind_scroll_to(self._imp_t)
 
         ibr = tk.Frame(ir, bg=BK); ibr.pack(anchor="w")
-        imp = _icon_full("import_in", 17, T2)
-        _make_btn(ibr, "import pasted",    self._import_key, w=156, icon=imp).pack(side="left")
-        _make_btn(ibr, "import .asc file", self._import_asc, w=160, icon=imp).pack(
-            side="left", padx=(8, 0))
+        if IS_WIN:              # the Windows look: one segmented bar
+            imp = lambda c: _icon_full("import_in", 17, c)
+            _seg_bar(ibr, [dict(text="Import pasted", icon=imp, command=self._import_key),
+                           dict(text="Import .asc file", icon=imp, command=self._import_asc)],
+                     pbg=BK, width=340).pack(side="left")
+        else:
+            imp = _icon_full("import_in", 17, T2)
+            _make_btn(ibr, "import pasted",    self._import_key, w=156, icon=imp).pack(side="left")
+            _make_btn(ibr, "import .asc file", self._import_asc, w=160, icon=imp).pack(
+                side="left", padx=(8, 0))
 
         tk.Frame(f, bg=BK, height=20).pack()
         scroll.scroll_top()
@@ -3050,9 +3304,13 @@ class App(tk.Tk):
         def redraw(_=None):
             if cv.winfo_width() <= 1:
                 return
-            # the active key gets a thin white border so it's clear which is in use
-            outline = WT if cv._fpr == self.my_fpr else DIV
-            _round_bg(cv, INP, 13, outline=outline)
+            if IS_WIN:                  # the Windows look: the active key is the lit card
+                on = cv._fpr == self.my_fpr
+                _round_bg(cv, FILL if on else PANEL, RAD_KEY, outline="#333333" if on else LINE)
+            else:
+                # the active key gets a thin white border so it's clear which is in use
+                outline = WT if cv._fpr == self.my_fpr else DIV
+                _round_bg(cv, INP, 13, outline=outline)
             cv.delete("fg")
             if icon is not None:
                 cv._kicon = icon
@@ -3223,7 +3481,7 @@ class App(tk.Tk):
         if not Card.available():
             self._error("No GnuPG", f"GnuPG is required. Install {GPG_DIST}.",
                                  parent=self); return
-        self._gen_btn.set_text("generating…"); self._gen_btn.set_enabled(False)
+        self._gen_btn.set_text("Generating…"); self._gen_btn.set_enabled(False)
         self.update()
         email, pw = self._gen_email.get().strip(), self._gen_pass.get()
         err = [None]
@@ -3242,7 +3500,7 @@ class App(tk.Tk):
                 self.after(200, poll); return
             if err[0]:
                 self._error("Error", str(err[0]), parent=self)
-                self._gen_btn.set_text("generate  (rsa 4096)"); self._gen_btn.set_enabled(True)
+                self._gen_btn.set_text("Generate  (RSA 4096)"); self._gen_btn.set_enabled(True)
             else:
                 self._reload_keys()
                 for k in self._secret:           # make the new key active
@@ -3442,9 +3700,13 @@ class App(tk.Tk):
 
         bar = tk.Frame(body, bg=HDR)
         bar.pack(fill="x", pady=(18, 0))
-        for label, value in reversed(buttons):          # last button = primary, rightmost
-            _make_btn(bar, label, lambda v=value: finish(v), w=84, pbg=HDR).pack(
-                side="right", padx=(8, 0))
+        if IS_WIN:              # one segmented bar (Enter still picks the last, primary one)
+            _seg_bar(bar, [dict(text=label, command=lambda v=value: finish(v))
+                           for label, value in buttons], pbg=HDR).pack(fill="x")
+        else:
+            for label, value in reversed(buttons):      # last button = primary, rightmost
+                _make_btn(bar, label, lambda v=value: finish(v), w=84, pbg=HDR).pack(
+                    side="right", padx=(8, 0))
 
         body.update_idletasks()
         w = max(W_MIN, body.winfo_reqwidth())
@@ -3452,7 +3714,7 @@ class App(tk.Tk):
         cv.configure(width=w + 2 * PAD, height=h + 2 * PAD)
         cv.create_window(PAD, PAD, window=body, anchor="nw", width=w)
         if IS_WIN or not _HAS_PIL:
-            cv.bind("<Configure>", lambda _: _round_bg(cv, HDR, 14, outline=DIV))
+            cv.bind("<Configure>", lambda _: _round_bg(cv, HDR, RAD_CARD, outline=LINE))
         else:
             # no window regions here (Windows clips the canvas below): paint its corners
             # with what they cover, sampled before the card is placed over it
@@ -3468,7 +3730,8 @@ class App(tk.Tk):
                 import ctypes
                 cv.update_idletasks()
                 W, H = cv.winfo_width(), cv.winfo_height()
-                rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, W + 1, H + 1, 28, 28)
+                rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, W + 1, H + 1,
+                                                             2 * RAD_CARD, 2 * RAD_CARD)
                 ctypes.windll.user32.SetWindowRgn(ctypes.c_void_p(cv.winfo_id()),
                                                   ctypes.c_void_p(rgn), True)
             except Exception:
@@ -3732,10 +3995,11 @@ class App(tk.Tk):
         mw = self._main_host.winfo_width()
         CW = (mw if mw > 1 else APP_W - 221) - 40            # content width of the panel
         BW = max(185, min(240, (CW - 2 * GAP) // 3))         # lone Detect button (no card)
-        f_reg, f_bold = _tkf.Font(font=FS), _tkf.Font(font=FBUB)   # the buttons' fonts
+        f_reg, f_bold = _tkf.Font(font=FBTN), _tkf.Font(font=FBTN_B)   # the buttons' fonts
 
         def grid_cols(items):
-            need = max((f_bold if b else f_reg).measure(l.upper()) for l, _, b in items) + 32
+            need = max((f_bold if b else f_reg).measure(l if IS_WIN else l.upper())
+                       for l, _, b in items) + 32
             for c in (3, 4, 2):
                 w = (CW - (c - 1) * GAP) // c
                 if len(items) % c == 0 and w >= need:
@@ -3764,7 +4028,10 @@ class App(tk.Tk):
             if not quiet:
                 for w in body.winfo_children():
                     w.destroy()
-                tk.Label(body, text="detecting…", font=FS, bg=BK, fg=T3).pack(anchor="w")
+                if IS_WIN:
+                    show_lone("Detecting…", button=False)
+                else:
+                    tk.Label(body, text="detecting…", font=FS, bg=BK, fg=T3).pack(anchor="w")
             res = [None]
 
             def worker():
@@ -3792,11 +4059,17 @@ class App(tk.Tk):
             if info.get("present"):
                 self._card_info = info               # shown instantly next time while in use
             if not info.get("present"):
+                if IS_WIN:
+                    show_lone("Insert your smartcard")
+                    return
                 tk.Label(body, text="Insert your smartcard", font=(UI, _pt(9), "bold"),
                          bg=BK, fg=T1).pack(anchor="w")
                 detect_btn.pack(anchor="w", padx=20, pady=(GAP, 0), after=body)   # lone Detect below
                 return
-            detect_btn.pack_forget()                 # Detect joins the button grid instead
+            if IS_WIN:
+                lone.place_forget()
+            else:
+                detect_btn.pack_forget()             # Detect joins the button grid instead
             for lbl, key in (("Cardholder", "name"), ("Serial", "serial"),
                              ("Version", "version"), ("Reader", "reader"),
                              ("Signature key", "sig_fpr"), ("Encryption key", "enc_fpr"),
@@ -3843,9 +4116,28 @@ class App(tk.Tk):
         cached = getattr(self, "_card_info", None)
         showing = bool(cached and self._card_present is True and in_use(cached))
         # the lone Detect button (no card shown yet); once a card is shown it's in the grid
-        detect_btn = _make_btn(f, "Detect card", detect, w=BW, pbg=BK, bold=True)
-        if not showing:
-            detect_btn.pack(anchor="w", padx=20, pady=(GAP, 0), after=body)
+        if IS_WIN:
+            # the Windows look: the lone Detect and its status line sit centred in the panel,
+            # placed over the scroll area (empty while no card is shown)
+            lone = tk.Frame(scroll, bg=BK)
+            lone_msg = tk.Label(lone, text="", font=FB, bg=BK, fg=T1)
+            detect_btn = _make_btn(lone, "Detect card", detect, w=BW, pbg=BK, bold=True)
+
+            def show_lone(msg="", button=True):
+                lone_msg.configure(text=msg)
+                lone_msg.pack_forget(); detect_btn.pack_forget()
+                if msg:
+                    lone_msg.pack(pady=(0, GAP + 4))
+                if button:
+                    detect_btn.pack()
+                lone.place(relx=0.5, rely=0.5, anchor="center")
+
+            if not showing:
+                show_lone()
+        else:
+            detect_btn = _make_btn(f, "Detect card", detect, w=BW, pbg=BK, bold=True)
+            if not showing:
+                detect_btn.pack(anchor="w", padx=20, pady=(GAP, 0), after=body)
         tk.Frame(f, bg=BK, height=16).pack()
         scroll.scroll_top()
         if showing:                       # card in use → details + options straight away,
@@ -3907,7 +4199,7 @@ class App(tk.Tk):
         (Card.status() after an import lets gpg learn the card's keys.)"""
         def busy(on):
             if btn is not None and btn.winfo_exists():
-                btn.set_text("getting key…" if on else "use this card")
+                btn.set_text("Getting key…" if on else "Use this card")
                 btn.set_enabled(not on)
 
         def gpg_out(r, err):
@@ -4060,11 +4352,18 @@ class App(tk.Tk):
 
         bf = tk.Frame(f, bg=BK)
         bf.pack(side="bottom", fill="x", pady=(10, 0))
-        imp = _icon_full("import_in", 17, T2)
-        _make_btn(bf, "Import",           self._save_contact, w=110, icon=imp).pack(side="left")
-        _make_btn(bf, "import .asc file",  self._import_asc,   w=160, icon=imp).pack(
-            side="left", padx=(8, 0))
-        _make_btn(bf, "Cancel",            self._welcome,      w=90).pack(side="left", padx=(8, 0))
+        if IS_WIN:              # the Windows look: one segmented bar
+            imp = lambda c: _icon_full("import_in", 17, c)
+            _seg_bar(bf, [dict(text="Import", icon=imp, command=self._save_contact),
+                          dict(text="Import .asc file", icon=imp, command=self._import_asc),
+                          dict(text="Cancel", command=self._welcome)], pbg=BK).pack(fill="x")
+        else:
+            imp = _icon_full("import_in", 17, T2)
+            _make_btn(bf, "Import",          self._save_contact, w=110, icon=imp).pack(side="left")
+            _make_btn(bf, "import .asc file", self._import_asc,   w=160, icon=imp).pack(
+                side="left", padx=(8, 0))
+            _make_btn(bf, "Cancel",           self._welcome,      w=90).pack(side="left",
+                                                                            padx=(8, 0))
 
         kcv, self._ac_key = _round_text(f, fg=T1)
         kcv.pack(fill="both", expand=True)
@@ -4245,6 +4544,27 @@ class App(tk.Tk):
             if t.strip():
                 self.clipboard_clear(); self.clipboard_append(t)
 
+        if IS_WIN:
+            # the Windows look: one segmented bar — Encrypt ▾ (▾ picks the recipient) ·
+            # Import file · Sign · Save · Copy — the same row as Decrypt / Verify
+            def make_enc(p, w, h):
+                nonlocal enc
+                enc = _split_btn(p, "Encrypt", do_encrypt, labels, pbg=PANEL, w=w, h=h,
+                                 tip=lambda lb: f"Encrypt to {lb}" if lb in opts
+                                 else "Import a key first",
+                                 icon=lambda c: _icon_full("lock", 16, c))
+                return enc
+            enc = None
+            _seg_bar(bar, [
+                dict(w=170, widget=make_enc),
+                dict(text="Import file", w=150, icon=lambda c: _icon_full("import_in", 17, c),
+                     command=lambda: self._load_into(txt)),
+                dict(text="Sign", command=do_sign),
+                dict(text="Save", command=save_out),
+                dict(w=56, icon=lambda c: _render_icon("copy", 18, c), tip="Copy",
+                     command=copy_out)], pbg=BK).pack(fill="x")
+            return
+
         # same layout as Decrypt / Verify: action · import file on the left, copy at the far
         # right. ENCRYPT's ▼ holds the contacts to encrypt to.
         enc = _split_btn(bar, "encrypt", do_encrypt, labels, pbg=BK, w=150,
@@ -4317,6 +4637,23 @@ class App(tk.Tk):
         # right; the status sits in the row so the box is the same height in both panels
         bar = tk.Frame(f, bg=BK)
         bar.pack(fill="x", pady=(10, 0))
+        if IS_WIN:
+            # the Windows look: one segmented bar — Decrypt / Verify · Import file ·
+            # [status] · Copy — the same row as Sign / Encrypt
+            def make_status(p, w, h):
+                nonlocal status
+                status = tk.Label(p, text="", font=FS, bg=PANEL, fg=T3, anchor="e", padx=8)
+                return status
+            status = None
+            _seg_bar(bar, [
+                dict(text="Decrypt / Verify", w=170, command=do_decrypt,
+                     icon=lambda c: _icon_full("unlock", 16, c)),
+                dict(text="Import file", w=150, icon=lambda c: _icon_full("import_in", 17, c),
+                     command=lambda: self._load_into(txt)),
+                dict(widget=make_status),
+                dict(w=56, icon=lambda c: _render_icon("copy", 18, c), tip="Copy",
+                     command=copy_out)], pbg=BK).pack(fill="x")
+            return
         _make_btn(bar, "decrypt / verify", do_decrypt, w=150, pbg=BK,
                   icon=_icon_full("unlock", 16, T2)).pack(side="left", padx=(0, 8))
         _make_btn(bar, "import file", lambda: self._load_into(txt), w=132, pbg=BK,
@@ -5271,7 +5608,7 @@ class App(tk.Tk):
 
     def _contact_row(self, idx, contact):
         active = (idx == self.active)
-        rbg = "#181818" if active else SB
+        rbg = SEL if active else SB
 
         holder = tk.Frame(self._clist, bg=SBG)     # per-contact container (shown/hidden on search)
         holder.pack(fill="x")
@@ -5562,7 +5899,7 @@ class App(tk.Tk):
         """Move the selection highlight in place — no list rebuild, no flicker."""
         self.active = new_idx
         for r in getattr(self, "_rows", []):
-            bg = "#181818" if r["idx"] == new_idx else SB
+            bg = SEL if r["idx"] == new_idx else SB
             for w in r["widgets"]:
                 try: w.configure(bg=bg)
                 except Exception: pass
@@ -5607,6 +5944,23 @@ class App(tk.Tk):
         # (encryption always also targets your own key so you can re-open sent messages)
         br = tk.Frame(self._main, bg=BK)
         br.pack(fill="x", padx=16, pady=(10, 12))    # bottom in line with the toolbar icons
+        if IS_WIN:
+            # the Windows look: one segmented bar — Encrypt · Decrypt · [status] · Copy
+            def make_status(p, w, h):
+                self._chat_status = tk.Label(p, text="", font=FS, bg=PANEL, fg=T3, anchor="e",
+                                             padx=8)
+                return self._chat_status
+            self._chat_status = None
+            _seg_bar(br, [
+                dict(text="Encrypt", w=150, icon=lambda c: _icon_full("lock", 16, c),
+                     command=lambda f=c.get("fpr"): self._encrypt_zone(
+                         self._contact_index_by_fpr(f))),
+                dict(text="Decrypt", w=150, icon=lambda c: _icon_full("unlock", 16, c),
+                     command=self._decrypt_zone),
+                dict(widget=make_status),
+                dict(w=56, icon=lambda c: _render_icon("copy", 18, c), tip="Copy",
+                     command=self._copy_zone)], pbg=BK).pack(fill="x")
+            return
         # resolve the contact by fingerprint at click time — its list index changes when
         # the contacts are reordered while this chat is open
         _make_btn(br, "Encrypt",
