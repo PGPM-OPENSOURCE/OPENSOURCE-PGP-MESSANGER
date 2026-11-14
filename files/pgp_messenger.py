@@ -55,10 +55,11 @@ def _resource(name):
     return os.path.join(base, name)
 
 
-def _register_fonts():
-    """Load the bundled Outfit fonts (fonts/, OFL) into this process (Windows) so Tk can use
-    them without a system install; Medium and SemiBold show up as families of their own.
-    Returns True if at least one face registered."""
+def _register_fonts(files=("Outfit-Regular.ttf", "Outfit-Medium.ttf",
+                           "Outfit-SemiBold.ttf", "Outfit-Bold.ttf")):
+    """Load bundled fonts (fonts/, OFL; Outfit by default) into this process (Windows) so Tk
+    can use them without a system install; Medium and SemiBold show up as families of their
+    own. Returns True if at least one face registered."""
     if not IS_WIN:
         return False
     added = 0
@@ -67,8 +68,7 @@ def _register_fonts():
         FR_PRIVATE = 0x10
         gdi = ctypes.windll.gdi32
         gdi.AddFontResourceExW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_void_p]
-        for fn in ("Outfit-Regular.ttf", "Outfit-Medium.ttf",
-                   "Outfit-SemiBold.ttf", "Outfit-Bold.ttf"):
+        for fn in files:
             p = _resource(os.path.join("fonts", fn))
             if os.path.exists(p):
                 added += gdi.AddFontResourceExW(p, FR_PRIVATE, None)
@@ -181,6 +181,40 @@ if IS_WIN:
     FBUB = (_semi, 9) if _semi else (UI, 9, "bold")
     FBTN = (_med, 10) if _med else FS
     FBTN_B = (_semi, 10) if _semi else FBUB
+
+# ─── Console look (Windows; Memoro's console design) ──────────────
+# cmd's "Campbell" greys on near-black, Cascadia Mono at one size, no boxes, borders or rounded
+# corners, buttons as bracketed words ([Encrypt]) that invert under the pointer like a console
+# selection, a selection drawn inverted, and the native Windows title bar. PGPM_LOOK=pnl starts
+# the PnL look above instead.
+CONSOLE = IS_WIN and os.environ.get("PGPM_LOOK", "console").lower() != "pnl"
+ON_FILL = BK                    # text on an inverted (selected / hovered) fill
+if CONSOLE:
+    BK = SB = SBG = HDR = PANEL = TBR = "#0c0c0c"    # the console's black, everywhere
+    INP, HOV, BUB_S = "#1a1a1a", "#1a1a1a", "#1a1a1a"    # fields; a row under the pointer
+    DIV = LINE = BK             # a console draws no borders or dividers
+    SCRL = "#767676"            # Windows Terminal's square scrollbar thumb
+    T1, T2, T3, T4 = "#cccccc", "#a8a8a8", "#767676", "#4a4a4a"
+    WT, RD, AM = "#f2f2f2", "#e74856", "#c19c00"     # bright text, red, yellow
+    GN = T2                     # no green text
+    SEL, FILL, FILL_HI = "#cccccc", "#262626", "#cccccc"   # selection = inverted
+    ON_FILL = BK
+    RAD_ENTRY = RAD_TEXT = RAD_CARD = RAD_KEY = 0
+    UI = MON = ("Cascadia Mono" if _register_fonts(("CascadiaMono-Regular.ttf",))
+                else "Consolas")
+    FCON = (UI, -16)            # one size: 16px, like Memoro
+    FM = FB = FS = FMO = FBUB = FBTN = FBTN_B = FCON
+
+    def _pt(size):              # every explicit size is the one console size
+        return -16
+
+
+EDGE = None if CONSOLE else DIV     # a field's outline (the console look draws none)
+
+
+def _fbold(size):
+    """A bold label font (the console has no bold: one plain size there)."""
+    return FCON if CONSOLE else (UI, _pt(size), "bold")
 
 _DATA     = os.path.join(os.path.expanduser("~"), ".pgp_messenger")
 _CONTACTS = os.path.join(_DATA, "contacts.json")
@@ -882,14 +916,16 @@ class ScrollFrame(tk.Frame):
         else:
             self._thumb.place(relx=1.0, x=-3, y=top, width=W, height=h, anchor="ne")
         self._thumb.delete("all")
-        if _HAS_PIL:
+        if CONSOLE:                                # the console look: a plain square thumb
+            self._thumb.create_rectangle(0, 0, W, h, fill=SCRL, width=0)
+        elif _HAS_PIL:
             # antialiased rounded pill (radius = half-width → fully curved ends)
             self._thumb_img = _rrect_img(W, h, W / 2.0, SCRL, self._bg)
             self._thumb.create_image(0, 0, image=self._thumb_img, anchor="nw")
         else:
             _round_rect(self._thumb, 0, 0, W, h, W / 2.0, fill=SCRL, outline="")
         grip = _mix_hex(SCRL, self._bg, 0.6)       # three short grip lines in the middle
-        for dy in (-3, 0, 3):
+        for dy in (() if CONSOLE else (-3, 0, 3)):
             self._thumb.create_line(1, h // 2 + dy, W - 1, h // 2 + dy, fill=grip)
         try: self.tk.call("raise", self._thumb._w)   # raise the widget (Canvas.lift is tag_raise)
         except Exception: pass
@@ -981,15 +1017,180 @@ RAD_W = 16    # corner radius for inputs / search pill (near-pill)
 RAD_BTN = 8   # corner radius for buttons (a little less curved than inputs)
 if IS_WIN:
     RAD_W = RAD_BTN = 6        # the Windows look: squarer fields and buttons
+if CONSOLE:
+    RAD_W = RAD_BTN = 0        # the console look: no rounded corners
 RAD_WIN = 24  # corner diameter for the app window (≈12px radius, Win11-like)
 APP_W = 920
-APP_H = 540 if IS_WIN else 510   # Windows' 540 includes its 30px custom title bar
+APP_H = 540 if IS_WIN and not CONSOLE else 510   # 540 includes the 30px custom title bar
 
 APP_VERSION = "0.6.2"
 GITHUB_REPO = "PGPM-OPENSOURCE/OPENSOURCE-PGP-MESSANGER"
 # the GnuPG distribution the app points users to
 GPG_DIST, GPG_URL = (("GPG Suite", "https://gpgtools.org") if IS_MAC else
                      ("Gpg4win", "https://www.gpg4win.org"))
+
+# ─── Console look: bracketed words ────────────────────────────────
+CON_GAP = 19                    # two characters between the words of a row (16px Cascadia)
+CON_WORDS = {"profile": "Profile & keys", "back": "Back", "copy": "Copy", "info": "i",
+             "nick": "Edit", "trash": "Delete"}    # icon kind -> its word
+WARN = "(!) " if CONSOLE else "⚠ "
+
+
+def _word_btn(parent, text, command, pbg=None, fg=None, danger=False, tip=None):
+    """The console look's button: "[text]", inverted under the pointer like a console
+    selection. Sitting straight on its parent, its resting background follows the parent's
+    (a contact row may be selected or hovered). Has set_text / set_enabled like the other
+    buttons, set_fg, and _lit (shown selected = inverted)."""
+    pbg = pbg or parent.cget("bg")
+    follow = parent.cget("bg") == pbg
+    st = {"on": True, "lit": False, "fg": fg or (RD if danger else T1)}
+    lbl = tk.Label(parent, text=f"[{text}]", font=FCON, bg=pbg, fg=st["fg"], bd=0,
+                   padx=0, pady=0, cursor="hand2")
+
+    def rest():
+        if st["lit"]:
+            lbl.configure(bg=SEL, fg=ON_FILL)
+        else:
+            lbl.configure(bg=lbl.master.cget("bg") if follow else pbg,
+                          fg=st["fg"] if st["on"] else T4)
+
+    def enter(_):
+        if st["on"]:
+            lbl.configure(bg=RD if danger else SEL, fg=ON_FILL)
+
+    lbl.bind("<Enter>", enter)
+    lbl.bind("<Leave>", lambda _: rest())
+    lbl.bind("<Button-1>", lambda _: command() if st["on"] else None)
+
+    def set_text(t):
+        lbl.configure(text=f"[{t}]")
+
+    def set_enabled(on):
+        st["on"] = on
+        lbl.configure(cursor="hand2" if on else "")
+        rest()
+
+    def set_fg(c):
+        st["fg"] = c
+        rest()
+
+    def lit(on):
+        st["lit"] = on
+        rest()
+    lbl.set_text, lbl.set_enabled, lbl.set_fg, lbl._lit = set_text, set_enabled, set_fg, lit
+    if tip:                                  # after the binds above (they'd replace its hooks)
+        _attach_tip(lbl, tip)
+    return lbl
+
+
+def _con_bar(parent, items, pbg=None, vertical=False):
+    """The console look's button row, from _seg_bar's items: bracketed words two characters
+    apart from the left (or one per line), an icon-only item shown as its tip's word. A
+    widget item with a fixed w (the Encrypt split button) keeps its place; one without (a
+    status line) follows the words and takes the rest of the row."""
+    pbg = pbg or parent.cget("bg")
+    fr = tk.Frame(parent, bg=pbg)
+    btns, flex = [], []
+    for it in items:
+        if it.get("widget"):
+            btns.append(None)
+            if not it.get("w"):
+                flex.append(it)
+                continue
+            w = it["widget"](fr, 0, 0)
+            w.pack(side="left", padx=(0, CON_GAP))
+            continue
+        b = _word_btn(fr, it.get("text") or it.get("tip") or "", it.get("command") or
+                      (lambda: None), pbg=pbg, danger=it.get("danger"))
+        if vertical:
+            b.pack(anchor="w")
+        else:
+            b.pack(side="left", padx=(0, CON_GAP))
+        if it.get("lit"):
+            b._lit(True)
+        btns.append(b)
+    for it in flex:
+        w = it["widget"](fr, 0, 0)
+        if isinstance(w, tk.Label):
+            w.configure(anchor="w", padx=0, pady=0, bd=0)   # one line, as tall as the words
+        w.pack(side="left", fill="x", expand=True)
+
+    def set_lit(i):                          # e.g. the tab that is open (None = none)
+        for j, b in enumerate(btns):
+            if b is not None:
+                b._lit(j == i)
+
+    fr.set_lit = set_lit
+    fr.set_enabled = lambda i, on: btns[i].set_enabled(on)
+    fr.set_text = lambda i, t: btns[i].set_text(t)
+    return fr
+
+
+def _con_split(parent, text, command, labels, default=None, pbg=None, tip=None):
+    """The console look's split button: "[Encrypt]" runs `command`, the "[▾]" right after it
+    opens a console-style pick list of `labels` (the pick is marked ">", kept in `fr._var`)."""
+    pbg = pbg or parent.cget("bg")
+    var = tk.StringVar(value=default or (labels[0] if labels else ""))
+    fr = tk.Frame(parent, bg=pbg)
+    st = {"pop": None, "bind": None}
+
+    def close(_=None):
+        b = st["bind"]
+        if b:
+            try: b[0].unbind("<Button-1>", b[1])
+            except Exception: pass
+            st["bind"] = None
+        if st["pop"] is not None:
+            try: st["pop"].destroy()
+            except Exception: pass
+            st["pop"] = None
+
+    def pick(lb):
+        var.set(lb)
+        close()
+
+    def toggle():
+        if st["pop"] is not None:
+            close(); return
+        fr.update_idletasks()
+        import tkinter.font as _tkf
+        cw = _tkf.Font(font=FCON).measure("0")
+        n = min(max(1, len(labels)), 8)
+        rowh = _tkf.Font(font=FCON).metrics("linespace")
+        pw = max(fr.winfo_width(), (max((len(lb) for lb in labels), default=4) + 4) * cw)
+        ph = n * rowh + 2
+        x = fr.winfo_rootx()
+        y = fr.winfo_rooty() - ph                         # opens upward, over the text box
+        if y < 4:
+            y = fr.winfo_rooty() + fr.winfo_height()
+        top = tk.Toplevel(fr); top.overrideredirect(True); top.configure(bg="#161616")
+        top.geometry(f"{pw}x{ph}+{x}+{y}")
+        st["pop"] = top
+        lst = tk.Listbox(top, font=FCON, bg="#161616", fg=T1, bd=0, highlightthickness=0,
+                         selectbackground=SEL, selectforeground=ON_FILL, activestyle="none",
+                         exportselection=False, height=n, cursor="hand2")
+        lst.pack(fill="both", expand=True, padx=1, pady=1)
+        for lb in labels:
+            lst.insert("end", ("> " if lb == var.get() else "  ") + lb)
+
+        def hover(e):
+            lst.selection_clear(0, "end")
+            lst.selection_set(lst.nearest(e.y))
+
+        lst.bind("<Motion>", hover)
+        lst.bind("<Leave>", lambda _: lst.selection_clear(0, "end"))
+        lst.bind("<ButtonRelease-1>", lambda e: labels and pick(labels[lst.nearest(e.y)]))
+        top.bind("<Escape>", close)
+        rw = fr.winfo_toplevel()
+        st["bind"] = (rw, rw.bind("<Button-1>", close, add="+"))
+
+    main = _word_btn(fr, text, lambda: (close(), command()), pbg=pbg,
+                     tip=(lambda: tip(var.get())) if tip else None)
+    main.pack(side="left")
+    _word_btn(fr, "▾", toggle, pbg=pbg, tip="Pick who to encrypt to").pack(side="left")
+    fr._var = var
+    return fr
+
 
 def _pill_label(cv, cx, text, font, img, fill=WT, h=BTN_H):
     """Draw `img` + `text` centred as one group at x=cx on an h-tall button canvas;
@@ -1023,6 +1224,9 @@ def _pill_recenter(cv):
 def _make_btn(parent, text, command, w=150, pbg=None, bold=False, icon=None):
     """Rounded button with an uppercase label (Windows: a filled block in sentence case);
     `icon` (a kind name or a ready image) sits before the label, or alone when `text` is empty."""
+    if CONSOLE:                     # the console look: a bracketed word (an icon -> its word)
+        word = text or (CON_WORDS.get(icon, "") if isinstance(icon, str) else "")
+        return _word_btn(parent, word, command, pbg=pbg)
     pbg = pbg or parent.cget("bg")
     cv = tk.Canvas(parent, width=w, height=BTN_H, bg=pbg,
                    highlightthickness=0, bd=0, takefocus=0)
@@ -1090,6 +1294,8 @@ def _split_btn(parent, text, command, labels, default=None, pbg=None, w=130, tip
     sits before the label. Windows: drawn as a quiet segment of a segmented bar, the same
     colours as the bar's other segments; `icon` is then a callable colour -> image, and the
     label or the chevron lights up with its part under the pointer."""
+    if CONSOLE:
+        return _con_split(parent, text, command, labels, default, pbg, tip)
     pbg = pbg or parent.cget("bg")
     H = h or BTN_H
     CW = 30                                             # chevron segment width
@@ -1245,6 +1451,8 @@ def _seg_bar(parent, items, pbg=None, width=None):
     in that segment, e.g. a split button). The bar is `width` px wide, or follows its own size when packed with
     fill="x"; segments without w share the rest equally. Hover / lit changes recolour items
     in place — nothing is rebuilt, so nothing flickers."""
+    if CONSOLE:                     # the console look: a row of bracketed words
+        return _con_bar(parent, items, pbg)
     import tkinter.font as _tkf
     pbg = pbg or parent.cget("bg")
     fnt = _tkf.Font(font=FBTN)
@@ -1376,7 +1584,7 @@ def _make_input(parent, placeholder="", pbg=None):
         w = cv.winfo_width()
         if w <= 1:
             return
-        _round_bg(cv, INP, RAD_W, outline=DIV)
+        _round_bg(cv, INP, RAD_W, outline=EDGE)
         cv.coords(win, 12, BTN_H // 2)
         cv.itemconfig(win, width=w - 24, height=BTN_H - 12)
 
@@ -1405,6 +1613,9 @@ def _make_input(parent, placeholder="", pbg=None):
 
 # ─── Link label ───────────────────────────────────────────────────
 def _link(parent, text, command, fg=T2, bg=BK):
+    if CONSOLE:                     # the console look: a bracketed word, sentence case
+        return _word_btn(parent, text[:1].upper() + text[1:], command, pbg=bg,
+                         danger=fg == RD)
     lbl = tk.Label(parent, text=text, font=FS, bg=bg, fg=fg, cursor="hand2")
     lbl.bind("<Button-1>", lambda _: command())
     lbl.bind("<Enter>",  lambda _, b=lbl: b.configure(fg=T1))
@@ -1439,7 +1650,7 @@ def _make_entry(parent, var=None, bg=INP, pbg=None, show=""):
         w = cv.winfo_width()
         if w <= 1:
             return
-        _round_bg(cv, bg, RAD_ENTRY, outline=DIV)
+        _round_bg(cv, bg, RAD_ENTRY, outline=EDGE)
         cv.coords(win, 14, 17)
         cv.itemconfig(win, width=w - 28, height=22)
     cv.bind("<Configure>", redraw)
@@ -1457,19 +1668,33 @@ def _round_text(parent, height_px=None, font=FMO, fg=T2, pbg=None):
     txt = tk.Text(cv, font=font, bg=INP, fg=fg, insertbackground=T1,
                   relief="flat", bd=0, highlightthickness=0, wrap="word")
     win = cv.create_window(0, 0, window=txt, anchor="nw")
-    PAD, RAD = 12, RAD_TEXT
-    cv._outline = DIV            # current border colour (turns white while a file hovers)
+    PAD, RAD = (10 if CONSOLE else 12), RAD_TEXT
+    cv._outline = EDGE           # current border colour (turns white while a file hovers)
+    cv._fill = INP
 
     def redraw(_=None):
         w, h = cv.winfo_width(), cv.winfo_height()
         if w <= 1 or h <= 1:
             return
-        _round_bg(cv, INP, RAD, outline=cv._outline)
+        _round_bg(cv, cv._fill, RAD, outline=cv._outline)
         cv.coords(win, PAD, PAD)
         cv.itemconfig(win, width=w - 2 * PAD, height=h - 2 * PAD)
     cv.bind("<Configure>", redraw)
+    if CONSOLE:
+        # the console look: a field brightens a step while you type in it (own bind tag,
+        # so the callers' placeholder bindings don't replace it)
+        def focus(on):
+            cv._fill = "#262626" if on else INP
+            txt.configure(bg=cv._fill)
+            redraw()
+        tag = f"conf{id(txt)}"
+        txt.bindtags(txt.bindtags() + (tag,))
+        txt.bind_class(tag, "<FocusIn>", lambda _: focus(True))
+        txt.bind_class(tag, "<FocusOut>", lambda _: focus(False))
 
     def set_border(color):
+        if color == DIV:
+            color = EDGE             # back to normal (no outline in the console look)
         if cv._outline != color:
             cv._outline = color
             redraw()
@@ -2381,7 +2606,7 @@ def _attach_tip(widget, text):
         t = tk.Toplevel(widget)
         t.overrideredirect(True)
         t.configure(bg=DIV)
-        tk.Label(t, text=tip, font=(UI, _pt(8)), bg="#202022",
+        tk.Label(t, text=tip, font=(UI, _pt(8)), bg="#161616" if CONSOLE else "#202022",
                  fg=T1, padx=8, pady=3).pack(padx=1, pady=1)
         t.update_idletasks()
         x = widget.winfo_rootx() + widget.winfo_width() // 2 - t.winfo_width() // 2
@@ -2409,6 +2634,10 @@ def _attach_tip(widget, text):
 def _icon_widget(parent, size, kind, command, fg=T2, hover=T1, pbg=None, tip=None, pad=1):
     """High-quality icon button (PIL, or a font glyph on macOS); falls back to canvas
     drawing. `pad` = space around the icon (1px, a label's default)."""
+    if CONSOLE and kind in CON_WORDS:   # the console look: the icon's word instead
+        return _word_btn(parent, CON_WORDS[kind], command, pbg=pbg,
+                         fg=T3 if kind == "info" else None,
+                         tip=tip if len(CON_WORDS[kind]) < 3 else None)
     pbg = pbg or parent.cget("bg")
     if _HAS_PIL:
         img_n = _render_icon(kind, size, fg, pbg)
@@ -2453,6 +2682,8 @@ def _glyph_widget(parent, g, command, hover, pbg, pad, tip):
 def _trash_button(parent, size, command, fg=T3, hover=RD, pbg=None, tip=None):
     """Delete button: while hovered the bin turns `hover` and its lid swings open over a
     few frames; it swings shut again on leave."""
+    if CONSOLE:                     # the console look: a red [Delete]
+        return _word_btn(parent, "Delete", command, pbg=pbg, danger=True)
     chars = [_GLYPHS.get(f"trash:{i}") for i in range(4)] if _GLYPHS else None
     if chars and all(chars):                    # macOS: the frames as font glyphs
         pbg = pbg or parent.cget("bg")
@@ -2671,13 +2902,19 @@ class App(tk.Tk):
             pass
         if IS_MAC and _HAS_PIL:
             _setup_glyphs(self)             # crisp font-glyph icons on Retina screens
-        if IS_WIN:
+        if IS_WIN and not CONSOLE:
             self.overrideredirect(True)     # custom borderless chrome (Windows only)
         self.geometry(f"{APP_W}x{APP_H}")
-        if not IS_WIN:
+        if CONSOLE:
+            self.minsize(640, 400)          # the console look: native, resizable window
+        elif not IS_WIN:
             self.minsize(APP_W, APP_H)      # the native window is resizable; never below the layout
         self.configure(bg=BK)
         self.option_add("*tearOff", False)
+        if CONSOLE:                         # a console marks a text selection inverted
+            for opt, col in (("selectBackground", SEL), ("selectForeground", ON_FILL),
+                             ("inactiveSelectBackground", SEL)):
+                self.option_add("*" + opt, col)
         self._dx = self._dy = 0
         self._priv_visible = False
         self._maximized = False
@@ -2703,15 +2940,19 @@ class App(tk.Tk):
             self._mac_chrome()
         self.protocol("WM_DELETE_WINDOW", self._quit)   # native close → full exit
         self.center()
+        if CONSOLE:
+            self._native_title_bar()                    # dark native title bar + taskbar id
         if IS_WIN:
-            self.after(80, self._round_corners)
-            self.after(120, self._win_taskbar)
+            if not CONSOLE:
+                self.after(80, self._round_corners)
+                self.after(120, self._win_taskbar)
             self.after(220, self._enable_drop)          # accept dragged-in files
             if os.environ.get("PGPM_SELFTEST_DROP"):
                 self.after(700, self._selftest_drop)    # headless drop stress-test → exits
             if os.environ.get("PGPM_DROPTEST_SERVE"):
                 self.after(800, self._droptest_serve)   # real-drag test target → exits on load
-            self.bind("<Map>", self._on_restore)        # keep rounded corners after restore
+            if not CONSOLE:
+                self.bind("<Map>", self._on_restore)    # keep rounded corners after restore
         if IS_MAC:
             self.after(220, self._enable_drop_mac)      # files dragged in from Finder
         self._start_card_watch()          # live plug/unplug detection
@@ -2761,6 +3002,29 @@ class App(tk.Tk):
         # clicking the Dock icon should bring back a minimized window (Tk only activates)
         self.createcommand("::tk::mac::ReopenApplication",
                            lambda: self.state() == "iconic" and self.deiconify())
+
+    def _native_title_bar(self):
+        """The console look keeps Windows' own title bar: give the process PGPM's taskbar
+        identity and draw the bar dark (DWM immersive dark mode), repainting the frame."""
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("aaaaeer.pgpm")
+        except Exception:
+            pass
+        try:
+            import ctypes
+            self.update_idletasks()
+            hwnd = self._hwnd()
+            if not hwnd:
+                return
+            on = ctypes.c_int(1)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                ctypes.c_void_p(hwnd), 20, ctypes.byref(on), ctypes.sizeof(on))   # dark mode
+            # SWP_NOSIZE|NOMOVE|NOZORDER|NOACTIVATE|FRAMECHANGED: redraw the title bar now
+            ctypes.windll.user32.SetWindowPos(ctypes.c_void_p(hwnd), None, 0, 0, 0, 0,
+                                              0x1 | 0x2 | 0x4 | 0x10 | 0x20)
+        except Exception:
+            pass
 
     def _win_taskbar(self):
         """Give the borderless Windows window a real taskbar button + its own
@@ -2960,7 +3224,7 @@ class App(tk.Tk):
         root.pack(fill="both", expand=True)
 
         # ── Windows-11-style title bar (custom borderless chrome; Windows only) ──
-        if IS_WIN:
+        if IS_WIN and not CONSOLE:
             tbar = tk.Frame(root, bg=TBR, height=30)
             tbar.pack(fill="x")
             tbar.pack_propagate(False)
@@ -2998,36 +3262,40 @@ class App(tk.Tk):
         sbar.pack(fill="x")
         sbar.pack_propagate(False)
 
-        # Hamburger menu icon → opens info/keys panel
-        _icon_widget(sbar, 18, "profile", lambda: self._show("info", self._open_info),
-                     fg=T2, hover=T1, tip="My profile & keys").pack(
-                     side="left", padx=(10, 4), pady=14)
+        # Hamburger menu icon → opens info/keys panel (the console look: it's in the menu
+        # at the bottom of the sidebar instead)
+        if not CONSOLE:
+            _icon_widget(sbar, 18, "profile", lambda: self._show("info", self._open_info),
+                         fg=T2, hover=T1, tip="My profile & keys").pack(
+                         side="left", padx=(10, 4), pady=14)
 
         # Search pill: rounded filled field with magnifier inside (filters name + key)
         self._search_var = tk.StringVar()
         self._search_var.trace("w", lambda *_: self._filter_contacts())
         pill = tk.Canvas(sbar, height=30, bg=SBG, highlightthickness=0, bd=0)
-        pill.pack(side="left", fill="x", expand=True, padx=(4, 12), pady=11)
+        pill.pack(side="left", fill="x", expand=True, padx=(12, 12) if CONSOLE else (4, 12),
+                  pady=11)
         se = tk.Entry(pill, textvariable=self._search_var, font=FM,
                       bg=INP, fg=T1, insertbackground=T1,
                       relief="flat", bd=0, highlightthickness=0)
         self._search_entry = se
-        mag_img = _render_icon("search", 16, T3, INP) if _HAS_PIL else None
+        mag_img = _render_icon("search", 16, T3, INP) if _HAS_PIL and not CONSOLE else None
         if mag_img is not None:
             pill._mag = mag_img                       # keep ref from GC
-        ent_win = pill.create_window(30, 15, window=se, anchor="w")
+        tx = 10 if CONSOLE else 30                    # text start (the console: no magnifier)
+        ent_win = pill.create_window(tx, 15, window=se, anchor="w")
 
         def _pill_redraw(_=None):
             w = pill.winfo_width()
             if w <= 1:
                 return
             h = 30
-            _round_bg(pill, INP, RAD_W, outline=DIV)
+            _round_bg(pill, se.cget("bg"), RAD_W, outline=EDGE)
             pill.delete("mag")
             if mag_img is not None:
                 _put_icon(pill, 16, h // 2, mag_img, tags="mag")
-            pill.coords(ent_win, 30, h // 2)
-            pill.itemconfig(ent_win, width=w - 42, height=h - 10)
+            pill.coords(ent_win, tx, h // 2)
+            pill.itemconfig(ent_win, width=w - tx - 12, height=h - 10)
         pill.bind("<Configure>", _pill_redraw)
         pill.bind("<Button-1>", lambda _: se.focus_set())
 
@@ -3048,6 +3316,9 @@ class App(tk.Tk):
         se.bind("<FocusIn>", _clr_ph)
         se.bind("<FocusOut>", _maybe_ph)
         _set_ph()
+        if CONSOLE:             # the console look: the field brightens a step while you type
+            for ev, c in (("<FocusIn>", "#262626"), ("<FocusOut>", INP)):
+                se.bind(ev, lambda _, c=c: (se.configure(bg=c), _pill_redraw()), add="+")
 
         # Bottom-left toolbar: Sign/Encrypt · Decrypt/Verify · Import (.asc)
         # 30px boxed icons, evenly spaced (20 · 30 · 20 · 30 · 20 · 30 · 20 · 30 · 20 = the
@@ -3059,7 +3330,21 @@ class App(tk.Tk):
                  ("verify",  "decrypt", self._open_decrypt,     "Decrypt / Verify"),
                  ("usbkey",  "card",    self._open_card,        "Smartcard / Keycard"))
         self._tool_icons = {}
-        if IS_WIN:
+        if CONSOLE:
+            # the console look: the tabs as a menu of words, one per line, the open one
+            # inverted; Profile & keys joins them (no ≡ icon at the top)
+            tools.pack(side="bottom", fill="x", padx=12, pady=(10, 12))
+            menu = [("add", self._open_add_contact, "+ Add contact"),
+                    ("encrypt", self._open_encrypt, "Sign / Encrypt"),
+                    ("decrypt", self._open_decrypt, "Decrypt / Verify"),
+                    ("card", self._open_card, "Smartcard"),
+                    ("info", self._open_info, "Profile & keys")]
+            self._tool_views = [view for view, _, _ in menu]
+            self._tool_bar = _con_bar(tools, [
+                dict(text=label, command=lambda v=view, c=cmd: self._show(v, c))
+                for view, cmd, label in menu], pbg=SBG, vertical=True)
+            self._tool_bar.pack(fill="x")
+        elif IS_WIN:
             # the Windows look: one tab strip, the open tab lit (bottom in line with the
             # panels' button bars, 12px above the window edge)
             tools.pack(side="bottom", fill="x", padx=12, pady=(10, 11))
@@ -3154,7 +3439,7 @@ class App(tk.Tk):
             _icon_widget(h, 16, "back", back_fn, fg=T3, hover=T1).pack(
                 side="left", padx=(14, 0), pady=16)
         if title:
-            tk.Label(h, text=title, font=FB, bg=HDR, fg=T1,
+            tk.Label(h, text=title, font=FB, bg=HDR, fg=WT if CONSOLE else T1,
                      padx=14 if not back_fn else 8).pack(side="left", pady=10)
         if right_widgets_fn:
             right_widgets_fn(h)
@@ -3165,6 +3450,10 @@ class App(tk.Tk):
         self._clear_main()
         self._view = "welcome"
         f = tk.Frame(self._main, bg=BK)
+        if CONSOLE:                 # the console look: plain text from the top-left
+            f.place(x=16, y=14)
+            tk.Label(f, text=f"PGPM v{APP_VERSION}", font=FCON, bg=BK, fg=T3).pack(anchor="w")
+            return
         f.place(relx=0.5, rely=0.45, anchor="center")
         vl = tk.Label(f, text=f" PGPM v{APP_VERSION}", font=FS, bg=BK, fg=T3)
         g = _glyph("asset:authority.png", 14, T3)
@@ -3199,13 +3488,13 @@ class App(tk.Tk):
             stc, stt = T2, "● Keycard detected"
         else:
             stc, stt = RD, "● no private keys yet — generate or import one below"
-        tk.Label(st_row, text=stt, font=(UI, _pt(9), "bold"),
+        tk.Label(st_row, text=stt, font=_fbold(9),
                  bg=BK, fg=stc).pack(anchor="w")
 
         def _section(title):
             tk.Frame(f, bg=DIV, height=1).pack(fill="x", padx=20, pady=(16, 0))
-            tk.Label(f, text=title, font=(UI, _pt(8), "bold"),
-                     bg=BK, fg=T3).pack(anchor="w", padx=20, pady=(6, 4))
+            tk.Label(f, text=title, font=_fbold(8),       # the console look: a bright title
+                     bg=BK, fg=WT if CONSOLE else T3).pack(anchor="w", padx=20, pady=(6, 4))
 
         # ─ My keys (compact cards; click one to make it active) ─
         # Cards flow left-to-right and wrap to the next line to save space.
@@ -3290,19 +3579,31 @@ class App(tk.Tk):
         nm = k.get("name") or k.get("keyid", "")
         meta = "   ".join(x for x in (k.get("email", ""), k.get("keyid", "")) if x)
         kind = "keycard" if k.get("on_card") else "key"
-        icon = _render_icon(kind, 20, T2) if _HAS_PIL else None
+        icon = _render_icon(kind, 20, T2) if _HAS_PIL and not CONSOLE else None
+        X = 10 if CONSOLE else 44       # text start (the console look: no icon)
+        if CONSOLE:
+            meta = ("smartcard   " if k.get("on_card") else "") + meta
 
         cv = tk.Canvas(parent, height=H, bg=BK, highlightthickness=0, bd=0, cursor="hand2")
         cv._fpr = k["fpr"]
         # measure text so the box wraps just around the content
-        nid = cv.create_text(44, 17, text=nm, anchor="w", font=FB)
-        mid = cv.create_text(44, 34, text=meta, anchor="w", font=(UI, _pt(8)))
-        cw = max(cv.bbox(nid)[2], cv.bbox(mid)[2]) + 14
+        nid = cv.create_text(X, 17, text=nm, anchor="w", font=FB)
+        mid = cv.create_text(X, 34, text=meta, anchor="w", font=(UI, _pt(8)))
+        cw = max(cv.bbox(nid)[2], cv.bbox(mid)[2]) + (10 if CONSOLE else 14)
         cv.delete("all")
         cv.configure(width=cw)
 
         def redraw(_=None):
             if cv.winfo_width() <= 1:
+                return
+            if CONSOLE:                 # the console look: the active key is selected (inverted)
+                on = cv._fpr == self.my_fpr
+                cv.configure(bg=SEL if on else BK)
+                cv.delete("fg")
+                cv.create_text(X, 15, text=nm, anchor="w", font=FB, fill=ON_FILL if on else T1,
+                               tags="fg")
+                cv.create_text(X, 35, text=meta, anchor="w", font=FS,
+                               fill="#3a3a3a" if on else T3, tags="fg")
                 return
             if IS_WIN:                  # the Windows look: the active key is the lit card
                 on = cv._fpr == self.my_fpr
@@ -3350,8 +3651,8 @@ class App(tk.Tk):
         self._akd_oncard = None      # force the action row to build on first update
 
         tk.Frame(akd, bg=DIV, height=1).pack(fill="x", padx=20, pady=(16, 0))
-        tk.Label(akd, text="ACTIVE KEY", font=(UI, _pt(8), "bold"),
-                 bg=BK, fg=T3).pack(anchor="w", padx=20, pady=(6, 4))
+        tk.Label(akd, text="ACTIVE KEY", font=_fbold(8),
+                 bg=BK, fg=WT if CONSOLE else T3).pack(anchor="w", padx=20, pady=(6, 4))
         info = tk.Frame(akd, bg=BK); info.pack(fill="x", padx=20)
         for label in ("Name", "Email", "Key ID", "Fingerprint",
                       "Created", "Valid until", "Storage"):
@@ -3393,7 +3694,8 @@ class App(tk.Tk):
         act = self._akd_act
         for w in act.winfo_children():
             w.destroy()
-        sep = lambda: tk.Label(act, text=" · ", font=FS, bg=BK, fg=T4).pack(side="left")
+        sep = lambda: tk.Label(act, text="  " if CONSOLE else " · ", font=FS, bg=BK,
+                               fg=T4).pack(side="left")
         _link(act, "copy public key", lambda: self._copy_pub(self._akd_fpr)).pack(side="left")
         if not oncard:
             sep(); _link(act, "copy private key", lambda: self._copy_priv(self._akd_fpr)).pack(side="left")
@@ -3677,6 +3979,90 @@ class App(tk.Tk):
         prev = self.focus_get()
         var = tk.StringVar(value="")
         res = {"v": buttons[0][1], "text": None}
+        if CONSOLE:
+            cv, ent = self._console_dialog(title, message, buttons, tone, entry, entry_text,
+                                           res, var)
+        else:
+            cv, ent = self._card_dialog(title, message, buttons, tone, entry, entry_text,
+                                        res, var, PAD, W_MIN)
+
+        def key(e):
+            if e.keysym in ("Return", "KP_Enter"):
+                finish(buttons[-1][1])
+            elif e.keysym == "Escape":
+                finish(buttons[0][1])
+
+        def finish(v):
+            res["v"] = v
+            if ent is not None:
+                res["text"] = ent.get()
+            var.set("done")
+        for wdg in (cv, ent):
+            if wdg is not None:
+                wdg.bind("<Key>", key)
+        stack = self.__dict__.setdefault("_dialogs", [])
+        stack.append(cv)
+        try:
+            cv.grab_set()                                # the rest of the app waits
+        except Exception:
+            pass
+        (ent or cv).focus_set()
+        self.wait_variable(var)
+        stack.remove(cv)
+        try:
+            cv.grab_release()
+        except Exception:
+            pass
+        cv.destroy()
+        if stack:                                        # a dialog underneath regains the grab
+            try: stack[-1].grab_set()
+            except Exception: pass
+        try:
+            if prev is not None and prev.winfo_exists():
+                prev.focus_set()
+        except Exception:
+            pass
+        return res["v"], res["text"]
+
+    def _console_dialog(self, title, message, buttons, tone, entry, entry_text, res, var):
+        """The console look's dialog: it takes over the window like console output — the
+        title (bright), the message, a field and the buttons as words, from the top-left."""
+        cv = tk.Frame(self, bg=BK, takefocus=1)
+        body = tk.Frame(cv, bg=BK)
+        body.pack(fill="x", padx=16, pady=14)
+        tk.Label(body, text=title, font=FCON, bg=BK, fg=WT if tone == T1 else tone,
+                 anchor="w").pack(fill="x")
+        if message:
+            tk.Label(body, text=message, font=FCON, bg=BK, fg=T1, justify="left", anchor="w",
+                     wraplength=max(300, self.winfo_width() - 40)).pack(fill="x", pady=(19, 0))
+        ent = None
+        if entry:
+            box = tk.Frame(body, bg="#262626")          # the field, one character of padding
+            box.pack(fill="x", pady=(19, 0))
+            ent = tk.Entry(box, font=FCON, bg="#262626", fg=T1, insertbackground=WT,
+                           relief="flat", bd=0, highlightthickness=0)
+            ent.pack(fill="x", padx=10, pady=4)
+            if entry_text:
+                ent.insert(0, entry_text)
+                ent.select_range(0, "end")              # typing replaces it
+
+        def finish(v):
+            res["v"] = v
+            if ent is not None:
+                res["text"] = ent.get()
+            var.set("done")
+
+        bar = tk.Frame(body, bg=BK)
+        bar.pack(fill="x", pady=(19, 0))
+        _con_bar(bar, [dict(text=label, command=lambda v=value: finish(v))
+                       for label, value in buttons], pbg=BK).pack(anchor="w")
+        cv.place(x=0, y=0, relwidth=1, relheight=1)
+        tk.Misc.tkraise(cv)
+        return cv, ent
+
+    def _card_dialog(self, title, message, buttons, tone, entry, entry_text, res, var,
+                     PAD, W_MIN):
+        """The dialog as a rounded card centred over the app (the Windows and macOS looks)."""
         cv = tk.Canvas(self, bg=BK, highlightthickness=0, bd=0, takefocus=1)
         body = tk.Frame(cv, bg=HDR)
         tk.Label(body, text=title, font=FB, bg=HDR, fg=tone, anchor="w").pack(fill="x")
@@ -3736,38 +4122,7 @@ class App(tk.Tk):
                                                   ctypes.c_void_p(rgn), True)
             except Exception:
                 pass
-
-        def key(e):
-            if e.keysym in ("Return", "KP_Enter"):
-                finish(buttons[-1][1])
-            elif e.keysym == "Escape":
-                finish(buttons[0][1])
-        for wdg in (cv, ent):
-            if wdg is not None:
-                wdg.bind("<Key>", key)
-        stack = self.__dict__.setdefault("_dialogs", [])
-        stack.append(cv)
-        try:
-            cv.grab_set()                                # the rest of the app waits
-        except Exception:
-            pass
-        (ent or cv).focus_set()
-        self.wait_variable(var)
-        stack.remove(cv)
-        try:
-            cv.grab_release()
-        except Exception:
-            pass
-        cv.destroy()
-        if stack:                                        # a dialog underneath regains the grab
-            try: stack[-1].grab_set()
-            except Exception: pass
-        try:
-            if prev is not None and prev.winfo_exists():
-                prev.focus_set()
-        except Exception:
-            pass
-        return res["v"], res["text"]
+        return cv, ent
 
     def _under_card(self, W, H, rad):
         """A W×H image of what the app shows where a card centred in the window is about
@@ -3886,7 +4241,8 @@ class App(tk.Tk):
             show()
 
         e.pack_configure(fill="none", expand=False)
-        n_img, h_img = (_png_img("nick"), _png_img("nick_hover")) if _HAS_PIL else (None, None)
+        n_img, h_img = ((_png_img("nick"), _png_img("nick_hover")) if _HAS_PIL and not CONSOLE
+                        else (None, None))           # the console look: an [Edit] word
         if n_img is not None and h_img is not None:      # the owner's own normal / hover art
             btn = _image_button(e.master, n_img, h_img, edit, tip="Set nickname")
         else:
@@ -3964,8 +4320,10 @@ class App(tk.Tk):
         if Card.available():
             # note pinned to the bottom, centred, at half strength (Tk text has no alpha,
             # so the colour is mixed 50% into the background — same look on a flat bg)
-            tk.Label(self._main, font=(UI, _pt(8)), bg=BK, fg=_mix_hex(T2, BK, 0.5),
-                     justify="center", wraplength=560,
+            tk.Label(self._main, font=(UI, _pt(8)), bg=BK,
+                     fg=T3 if CONSOLE else _mix_hex(T2, BK, 0.5),
+                     justify="left" if CONSOLE else "center", wraplength=640 if CONSOLE else 560,
+                     anchor="w" if CONSOLE else "center",
                      text="Use an OpenPGP smartcard through GnuPG. The private key stays on the "
                           "card; signing and decryption happen on the card (PIN via GnuPG's "
                           "pinentry dialog).\nOnly Nitrokey has been tested so far; other "
@@ -4126,6 +4484,13 @@ class App(tk.Tk):
             def show_lone(msg="", button=True):
                 lone_msg.configure(text=msg)
                 lone_msg.pack_forget(); detect_btn.pack_forget()
+                if CONSOLE:             # the console look: from the top-left, no centring
+                    if msg:
+                        lone_msg.pack(anchor="w", pady=(0, 19))
+                    if button:
+                        detect_btn.pack(anchor="w")
+                    lone.place(x=20, y=18)
+                    return
                 if msg:
                     lone_msg.pack(pady=(0, GAP + 4))
                 if button:
@@ -4612,7 +4977,7 @@ class App(tk.Tk):
             txt.delete("1.0", "end"); txt.insert("1.0", text); txt.configure(fg=T1)
             if signer:
                 g = _glyph("asset:valid.png", 16, GN)
-                vi = None if g else self._asset_img("valid.png", 16, tint=GN)
+                vi = None if g or CONSOLE else self._asset_img("valid.png", 16, tint=GN)
                 signer = self._fit_signer(status, " valid signature from ", signer)
                 if g is not None:                # macOS: a crisp glyph before the text
                     status.configure(image="", text=f" valid signature from {signer}", fg=GN)
@@ -4742,7 +5107,7 @@ class App(tk.Tk):
 
         st = self._key_status(contact)         # expired / expires-soon badge
         if st:
-            tk.Label(f, text="⚠ " + st[0], font=FB, bg=BK, fg=st[1]).pack(anchor="w", pady=(4, 0))
+            tk.Label(f, text=WARN + st[0], font=FB, bg=BK, fg=st[1]).pack(anchor="w", pady=(4, 0))
 
         pcv, pt = _round_text(f, fg=T2)
         pcv.pack(fill="both", expand=True, pady=(12, 0))
@@ -4764,7 +5129,8 @@ class App(tk.Tk):
         # actions for this key live in its tab (copy + delete sit on the box / header)
         acts = tk.Frame(f, bg=BK); acts.pack(anchor="w", pady=(10, 0))
         fpr = contact.get("fpr", "")
-        sep = lambda: tk.Label(acts, text="  ·  ", font=FS, bg=BK, fg=T4).pack(side="left")
+        sep = lambda: tk.Label(acts, text="  " if CONSOLE else "  ·  ", font=FS, bg=BK,
+                               fg=T4).pack(side="left")
 
         if contact.get("secret") and fpr != self.my_fpr:
             _link(acts, "set as active key",
@@ -5593,8 +5959,8 @@ class App(tk.Tk):
             return
         start = sf.winfo_rooty() + sf.winfo_height() - self._FADE_PX
         for r in getattr(self, "_rows", []):
-            if not r["visible"]:
-                continue
+            if not r["visible"] or (CONSOLE and r["idx"] == self.active):
+                continue                         # (the console's inverted row isn't dimmed)
             for w, opt, base, to in r["fade"]:
                 try:
                     y = w.winfo_rooty() + w.winfo_height() / 2
@@ -5613,35 +5979,40 @@ class App(tk.Tk):
         holder = tk.Frame(self._clist, bg=SBG)     # per-contact container (shown/hidden on search)
         holder.pack(fill="x")
         row = tk.Frame(holder, bg=rbg, cursor="hand2")
-        row.pack(fill="x")
+        # the console look: the row lines up with the search field above it (same 12px side
+        # margins, its text in line with the field's), and its lines carry no extra padding
+        IN = 10 if CONSOLE else 14                  # text inset inside the row
+        tight = dict(bd=0, pady=0) if CONSOLE else {}
+        row.pack(fill="x", padx=12 if CONSOLE else 0)
 
         mid = tk.Frame(row, bg=rbg)
-        mid.pack(side="left", fill="x", expand=True, padx=14, pady=10)
+        mid.pack(side="left", fill="x", expand=True, padx=IN, pady=10)
 
         nm = self._shown_name(contact)              # nickname if one is set
         if contact.get("secret"):
             nm += "  (you)"
         nl = tk.Label(mid, text=nm, font=FB,
-                      bg=rbg, fg=T1, anchor="w")
+                      bg=rbg, fg=T1, anchor="w", **tight)
         nl.pack(anchor="w")
 
         sub = contact.get("email") or (
             (contact.get("keyid", "")[:16] + "…") if contact.get("keyid") else "")
         sl = None
         if sub:
-            sl = tk.Label(mid, text=sub, font=FS, bg=rbg, fg=T3, anchor="w")
+            sl = tk.Label(mid, text=sub, font=FS, bg=rbg, fg=T3, anchor="w", **tight)
             sl.pack(anchor="w")
 
         badge = None
         st = self._key_status(contact)         # expired / expires-soon badge
         if st:
-            badge = tk.Label(mid, text="⚠ " + st[0], font=(UI, _pt(8)), bg=rbg, fg=st[1], anchor="w")
+            badge = tk.Label(mid, text=WARN + st[0], font=(UI, _pt(8)), bg=rbg, fg=st[1],
+                             anchor="w", **tight)
             badge.pack(anchor="w")
 
         # key info (delete lives in its tab); packed before `mid` so a long name gets
         # clipped instead of pushing the icon out
         side = tk.Frame(row, bg=rbg)
-        side.pack(side="right", padx=(0, 12), before=mid)
+        side.pack(side="right", padx=(0, IN if CONSOLE else 12), before=mid)
         # rec["idx"] follows the contact when the list is reordered (no rebuild), so the
         # callbacks below read it at event time instead of capturing a fixed index
         ib = _icon_widget(side, 18, "info",
@@ -5662,8 +6033,11 @@ class App(tk.Tk):
                         contact.get("keyid", ""), contact.get("fpr", "")]).lower()
         fpr = contact.get("fpr")
         rec = {"idx": idx, "holder": holder, "row": row, "fpr": fpr,
-               "hay": hay, "visible": True, "widgets": widgets, "fade": fade}
+               "hay": hay, "visible": True, "widgets": widgets, "fade": fade,
+               "sl": sl, "ib": ib}
         self._rows.append(rec)
+        if CONSOLE and active:
+            self._con_row_colours(rec, True)
 
         def enter(_):
             if self.active != rec["idx"] and getattr(self, "_drag", None) is None:
@@ -5718,8 +6092,10 @@ class App(tk.Tk):
                 return
             d["moved"] = True
             d["off"] = e.y_root - h.winfo_rooty()               # grab point inside the row
-            d["gx"]  = h.winfo_rootx() - sf.winfo_rootx()
-            d["gw"]  = h.winfo_width()
+            rec = self._row_by_fpr(fpr)                         # the row (inset in the console look)
+            rw = rec["row"] if rec else h
+            d["gx"]  = rw.winfo_rootx() - sf.winfo_rootx()
+            d["gw"]  = rw.winfo_width()
             d["gh"]  = max(1, h.winfo_height())
             # where the row currently sits among the others (the gap starts here)
             top = h.winfo_rooty()
@@ -5794,14 +6170,17 @@ class App(tk.Tk):
             g.attributes("-topmost", True)
         except Exception:
             pass
-        g.configure(bg=WT)                           # 1px white outline via padding
+        # 1px white outline via padding (the console look: no outline, the row's own insets)
+        ol = 0 if CONSOLE else 1
+        tight = dict(bd=0, pady=0) if CONSOLE else {}
+        g.configure(bg=LB if CONSOLE else WT)
         box = tk.Frame(g, bg=LB)
-        box.pack(fill="both", expand=True, padx=1, pady=1)
+        box.pack(fill="both", expand=True, padx=ol, pady=ol)
         inner = tk.Frame(box, bg=LB)
-        inner.pack(fill="both", expand=True, padx=13, pady=9)
-        tk.Label(inner, text=name, font=FB, bg=LB, fg=T1, anchor="w").pack(anchor="w")
+        inner.pack(fill="both", expand=True, padx=10 if CONSOLE else 13, pady=10 if CONSOLE else 9)
+        tk.Label(inner, text=name, font=FB, bg=LB, fg=T1, anchor="w", **tight).pack(anchor="w")
         if sub:
-            tk.Label(inner, text=sub, font=FS, bg=LB, fg=T3, anchor="w").pack(anchor="w")
+            tk.Label(inner, text=sub, font=FS, bg=LB, fg=T3, anchor="w", **tight).pack(anchor="w")
         try:
             g.update_idletasks()                     # map it now, at the right spot
             # alpha must be set AFTER the window maps: pre-map it never becomes
@@ -5903,6 +6282,26 @@ class App(tk.Tk):
             for w in r["widgets"]:
                 try: w.configure(bg=bg)
                 except Exception: pass
+            if CONSOLE:
+                self._con_row_colours(r, r["idx"] == new_idx)
+        if CONSOLE:
+            self._fade_rows()                    # re-dim the rows near the bottom edge
+
+    def _con_row_colours(self, r, on):
+        """The console look: the selected contact row is drawn inverted (dark text on the
+        light selection), the others in the normal greys."""
+        for w, c in ((r["widgets"][2], ON_FILL if on else T1),
+                     (r.get("sl"), "#3a3a3a" if on else T3)):
+            if w is not None:
+                try:
+                    w.configure(fg=c)
+                    w._fade_col = None               # let the bottom fade recolour it later
+                except Exception:
+                    pass
+        try:
+            r["ib"].set_fg(ON_FILL if on else T3)
+        except Exception:
+            pass
 
     # ── Contact panel (encrypt / decrypt zone) ────────────────────
     def _open(self, idx):
