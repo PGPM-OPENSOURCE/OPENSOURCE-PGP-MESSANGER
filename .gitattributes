@@ -1,8 +1,7 @@
-# Normalize line endings. Force LF on shell/python/yaml so the CI build scripts
+# Normalize line endings. Force LF on shell/yaml so the CI build scripts
 # run correctly on the Linux and macOS runners (CRLF would break bash heredocs).
 * text=auto
 *.sh   text eol=lf
-*.py   text eol=lf
 *.yml  text eol=lf
 *.yaml text eol=lf
 *.iss  text eol=lf
@@ -11,3 +10,9 @@
 *.icns binary
 *.ttf  binary
 *.otf  binary
+
+# The installers and packaging (the Windows setup script, the macOS package's scripts and pages)
+# aren't PGPM's code: leave them out of GitHub's language bar, which then shows the app, all Rust
+installer/** linguist-detectable=false
+rust/installer/** linguist-detectable=false
+rust/scripts/** linguist-detectable=false
