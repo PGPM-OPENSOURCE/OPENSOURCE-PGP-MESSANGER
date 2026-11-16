@@ -2,7 +2,7 @@
 
 [![Download latest release](https://img.shields.io/badge/Download-Latest%20Release-2ea44f?style=for-the-badge&logo=github)](../../releases/latest)
 
-A modern, dark-themed **Windows** desktop app for working with OpenPGP keys and messages — generate
+desktop app for working with OpenPGP keys and messages — generate
 and manage keys, sign / encrypt, decrypt / verify, manage contacts' public keys, and use a hardware
 OpenPGP smartcard (Nitrokey / YubiKey). Built with Python + Tkinter; the GnuPG keyring is the source
 of truth (so it stays in sync with tools like Kleopatra / `gpg`). The **macOS** version is a native
