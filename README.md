@@ -10,16 +10,15 @@ app written in **Rust** ([`rust/`](rust/)), with the same look and the same keyr
 
 ## Download & run
 
-No installation needed — a single self-contained file you **double-click to open**. Grab it from the
-[Releases](../../releases/latest) page (or the button above):
+Grab the setup for your system from the [Releases](../../releases/latest) page (or the button above):
 
-| Download | Run it |
-|----------|--------|
-| `PGPM.exe` | Double-click. First launch: Windows SmartScreen → *More info → Run anyway* (unsigned). |
-| `PGPM-macOS.dmg` | macOS, native app written in Rust. Open it and drag PGPM into Applications. First launch: right-click PGPM → *Open* (not signed by Apple). Needs [GPG Suite](https://gpgtools.org). |
+| Download | Install |
+|----------|---------|
+| `PGPM-Setup.exe` | Windows. Double-click and follow the setup; it installs GnuPG too if the PC doesn't have it. First launch: Windows SmartScreen → *More info → Run anyway* (unsigned). |
+| `PGPM-Setup.pkg` | macOS, native app written in Rust. Double-click and follow the setup; it gets GnuPG ([GPG Suite](https://gpgtools.org)) too if the Mac doesn't have it. First time: right-click it → *Open* (not signed by Apple; on macOS 15 and later: System Settings → Privacy & Security → *Open Anyway*). |
 
-> ℹ️ **GnuPG is the only prerequisite** — install [Gpg4win](https://www.gpg4win.org) once, then the
-> app just runs. Without it the app still opens but key/crypto features are disabled.
+> ℹ️ **GnuPG is the only prerequisite**, and both setups install it when it's missing. Without it
+> the app still opens but key/crypto features are disabled.
 
 ## Features
 
@@ -43,8 +42,8 @@ pip install -r files/requirements.txt pyinstaller
 pyinstaller --onefile --windowed --name PGPM --icon assets/icon.ico \
   --add-data "assets;assets" --add-data "fonts;fonts" files/pgp_messenger.py
 ```
-Result: `dist/PGPM.exe`. (CI builds this automatically on each `vX.Y.Z` tag and attaches it to a
-Release.)
+Result: `dist/PGPM.exe`. (CI builds it and the setup, `PGPM-Setup.exe`, on each `vX.Y.Z` tag and
+attaches the setup to the Release.)
 
 ## Build the macOS app (Rust)
 
