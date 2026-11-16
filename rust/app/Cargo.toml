@@ -20,6 +20,14 @@ unicode-linebreak = "0.1"
 serde_json = { version = "1", features = ["preserve_order"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
+# Windows: the single-instance mutex and the pointer position during a file drag
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+# Windows: the program's icon and version info inside PGPM.exe
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 # macOS: the app menu, the dark title bar, and the pointer position during a file drag
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

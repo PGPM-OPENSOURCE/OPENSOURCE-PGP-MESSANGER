@@ -24,8 +24,15 @@ pub fn install(ctx: &egui::Context, cjk: bool) {
         fallbacks.push(("hiragino", "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc"));
     }
     fallbacks.push(("apple-symbols", "/System/Library/Fonts/Apple Symbols.ttf"));
+    // Windows: Segoe UI Symbol, where Windows finds the few glyphs Cascadia lacks (✕, ⬆)
+    #[cfg(windows)]
+    let fallbacks: Vec<(&str, String)> = {
+        let _ = fallbacks;
+        let fonts = std::path::Path::new(&std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("Fonts");
+        vec![("segoe-ui-symbol", fonts.join("seguisym.ttf").to_string_lossy().into_owned())]
+    };
     for (name, path) in fallbacks {
-        if let Ok(bytes) = std::fs::read(path) {
+        if let Ok(bytes) = std::fs::read(&path) {
             let mut fd = FontData::from_owned(bytes);
             if name == "hiragino" {
                 // on Cascadia's baseline, where CoreText puts it

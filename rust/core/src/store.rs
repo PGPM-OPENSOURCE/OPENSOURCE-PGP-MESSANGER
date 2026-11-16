@@ -8,7 +8,19 @@ use std::path::PathBuf;
 use serde_json::{Map, Value};
 
 pub fn data_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    // PGPM_DATA_DIR: another folder for these files (tests run on a throwaway one; moving HOME /
+    // USERPROFILE instead would move GnuPG's agent socket too)
+    if let Some(d) = std::env::var_os("PGPM_DATA_DIR").filter(|d| !d.is_empty()) {
+        let d = PathBuf::from(d);
+        let _ = std::fs::create_dir_all(&d);
+        return d;
+    }
+    // `~` as Python's os.path.expanduser sees it: %USERPROFILE% on Windows (which has no HOME)
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+    let home = home.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     let d = home.join(".pgp_messenger");
     let _ = std::fs::create_dir_all(&d);
     d

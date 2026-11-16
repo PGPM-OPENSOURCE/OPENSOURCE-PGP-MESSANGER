@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write          # needed to attach PGPM.exe to a Release
+  contents: write          # needed to attach PGPM-Setup.exe to a Release
 
 env:
   # official GnuPG installer bundled into PGPM-Setup.exe; the hash was taken from a
@@ -24,15 +24,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
 
-      - name: Install dependencies
-        run: pip install -r files/requirements.txt pyinstaller
+      - name: Build PGPM.exe (the Rust app in rust/, shared with macOS)
+        working-directory: rust
+        run: cargo build -p pgpm --release --locked
 
-      - name: Build PGPM.exe
-        run: pyinstaller --onefile --windowed --name PGPM --icon assets/icon.ico --add-data "assets;assets" --add-data "fonts;fonts" --noconfirm files/pgp_messenger.py
+      - name: Put PGPM.exe where the setup takes it from
+        run: mkdir -p dist && cp rust/target/release/pgpm.exe dist/PGPM.exe
 
       - name: Fetch GnuPG installer (pinned, checksum-verified)
         run: |
@@ -44,7 +44,7 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          $v = (Select-String -Path files/pgp_messenger.py -Pattern '^APP_VERSION = "(.+)"').Matches[0].Groups[1].Value
+          $v = (Select-String -Path rust/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$v" "/DGnuPGSetup=$env:GNUPG_SETUP" installer\PGPM.iss
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
@@ -62,4 +62,3 @@ jobs:
         with:
           files: |
             dist/PGPM-Setup.exe
-            dist/PGPM.exe

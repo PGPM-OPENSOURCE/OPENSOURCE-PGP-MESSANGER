@@ -4,9 +4,9 @@
 
 desktop app for working with OpenPGP keys and messages — generate
 and manage keys, sign / encrypt, decrypt / verify, manage contacts' public keys, and use a hardware
-OpenPGP smartcard (Nitrokey / YubiKey). Built with Python + Tkinter; the GnuPG keyring is the source
-of truth (so it stays in sync with tools like Kleopatra / `gpg`). The **macOS** version is a native
-app written in **Rust** ([`rust/`](rust/)), with the same look and the same keyring and settings.
+OpenPGP smartcard (Nitrokey / YubiKey). **Windows** and **macOS** run one native app written in
+**Rust** ([`rust/`](rust/)); the GnuPG keyring is the source of truth (so it stays in sync with tools
+like Kleopatra / `gpg`).
 
 ## Download & run
 
@@ -14,7 +14,7 @@ Grab the setup for your system from the [Releases](../../releases/latest) page (
 
 | Download | Install |
 |----------|---------|
-| `PGPM-Setup.exe` | Windows. Double-click and follow the setup; it installs GnuPG too if the PC doesn't have it. First launch: Windows SmartScreen → *More info → Run anyway* (unsigned). |
+| `PGPM-Setup.exe` | Windows, native app written in Rust. Double-click and follow the setup; it installs GnuPG too if the PC doesn't have it. First launch: Windows SmartScreen → *More info → Run anyway* (unsigned). |
 | `PGPM-Setup.pkg` | macOS, native app written in Rust. Double-click and follow the setup; it gets GnuPG ([GPG Suite](https://gpgtools.org)) too if the Mac doesn't have it. First time: right-click it → *Open* (not signed by Apple; on macOS 15 and later: System Settings → Privacy & Security → *Open Anyway*). |
 
 > ℹ️ **GnuPG is the only prerequisite**, and both setups install it when it's missing. Without it
@@ -27,23 +27,17 @@ Grab the setup for your system from the [Releases](../../releases/latest) page (
 - Encrypt-to-self on every message, key-expiry badges, and file import/drag-and-drop into the compose box.
 - Hardware smartcard (Nitrokey / YubiKey) operations via GnuPG.
 
-## Run from source
+## Build the Windows app (Rust)
 
 ```bash
-pip install -r files/requirements.txt
-python files/pgp_messenger.py
+cd rust
+cargo build -p pgpm --release   # target/release/pgpm.exe
 ```
-Requires Python 3.10+ with Tkinter (bundled with the official python.org installer).
-
-## Build the standalone yourself
-
-```bash
-pip install -r files/requirements.txt pyinstaller
-pyinstaller --onefile --windowed --name PGPM --icon assets/icon.ico \
-  --add-data "assets;assets" --add-data "fonts;fonts" files/pgp_messenger.py
-```
-Result: `dist/PGPM.exe`. (CI builds it and the setup, `PGPM-Setup.exe`, on each `vX.Y.Z` tag and
-attaches the setup to the Release.)
+Requires Rust (stable) and the Microsoft C++ Build Tools (for the linker; nothing in PGPM is C).
+The setup is built with
+[Inno Setup](https://jrsoftware.org/isinfo.php) from `installer/PGPM.iss` (copy `pgpm.exe` to
+`dist/PGPM.exe` first). CI builds both on each `vX.Y.Z` tag and attaches `PGPM-Setup.exe` to the
+Release.
 
 ## Build the macOS app (Rust)
 

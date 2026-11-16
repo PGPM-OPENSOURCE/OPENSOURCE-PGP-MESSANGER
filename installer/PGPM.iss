@@ -1,5 +1,6 @@
 ; PGPM setup wizard (Inno Setup 6), bundled with the official GnuPG installer.
-; Build from the repo root, after PyInstaller has produced dist\PGPM.exe:
+; Build from the repo root, after the Rust app has been built and copied to dist\PGPM.exe
+; (cargo build -p pgpm --release in rust\, then rust\target\release\pgpm.exe -> dist\PGPM.exe):
 ;   iscc /DAppVersion=0.5.7 /DGnuPGSetup=gnupg-w32-2.5.24_20260923.exe installer\PGPM.iss
 ; installer\redist\<GnuPGSetup> must be the signature-verified file from gnupg.org.
 ; Output: dist\PGPM-Setup.exe

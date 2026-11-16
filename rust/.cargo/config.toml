@@ -1,0 +1,4 @@
+# Windows: link Microsoft's C runtime into PGPM.exe (Rust's standard library sits on it), so the
+# app starts on any PC, also one without the Visual C++ Redistributable (VCRUNTIME140.dll).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

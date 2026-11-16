@@ -1,18 +1,6 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-
-# PyInstaller / build output
-build/
+# Build output (the Rust app builds in rust/target, see rust/.gitignore; the setup lands in dist/)
 dist/
 out/
-*.spec
-
-# Virtual envs
-.venv/
-venv/
-env/
 
 # App runtime data — NEVER commit private keys / config
 .pgp_messenger/

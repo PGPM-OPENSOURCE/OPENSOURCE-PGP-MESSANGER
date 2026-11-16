@@ -6,11 +6,16 @@ use std::io::Read;
 use std::time::Duration;
 
 fn agent(timeout: u64) -> ureq::Agent {
-    ureq::Agent::config_builder()
+    let cfg = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(timeout)))
-        .http_status_as_error(false)
-        .build()
-        .into()
+        .http_status_as_error(false);
+    // TLS with RustCrypto's pure-Rust algorithms (see Cargo.toml)
+    let cfg = cfg.tls_config(
+        ureq::tls::TlsConfig::builder()
+            .unversioned_rustls_crypto_provider(std::sync::Arc::new(rustls_rustcrypto::provider()))
+            .build(),
+    );
+    cfg.build().into()
 }
 
 /// Why a download failed, in the words Python's urllib gave (the dialogs quote it).

@@ -43,10 +43,18 @@ pub fn path() -> Option<PathBuf> {
             return Some(exe.into());
         }
     }
+    // Windows: where the GnuPG / Gpg4win installer put it (a PATH set before it was installed
+    // doesn't have it yet), then the default folders
     #[cfg(windows)]
-    for env in ["ProgramFiles", "ProgramFiles(x86)"] {
-        if let Some(d) = std::env::var_os(env) {
-            let exe = PathBuf::from(d).join("GnuPG").join("bin").join("gpg.exe");
+    {
+        let dirs = registry_install_dirs().into_iter().chain(
+            ["ProgramFiles", "ProgramFiles(x86)"]
+                .into_iter()
+                .filter_map(std::env::var_os)
+                .map(|d| PathBuf::from(d).join("GnuPG")),
+        );
+        for d in dirs {
+            let exe = d.join("bin").join("gpg.exe");
             if exe.is_file() {
                 return Some(exe);
             }
@@ -55,9 +63,58 @@ pub fn path() -> Option<PathBuf> {
     None
 }
 
+/// GnuPG's "Install Directory" in the registry (64-bit view, then 32-bit), as the GnuPG and
+/// Gpg4win installers register it.
+#[cfg(windows)]
+fn registry_install_dirs() -> Vec<PathBuf> {
+    use windows_sys::Win32::System::Registry::{
+        HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6432KEY, RRF_SUBKEY_WOW6464KEY, RegGetValueW,
+    };
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let (key, value) = (wide("SOFTWARE\\GnuPG"), wide("Install Directory"));
+    let mut out = Vec::new();
+    for view in [RRF_SUBKEY_WOW6464KEY, RRF_SUBKEY_WOW6432KEY] {
+        let mut buf = [0u16; 1024];
+        let mut len = (buf.len() * 2) as u32;
+        // SAFETY: the buffers outlive the call and `len` is the byte size of `buf`
+        let rc = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                key.as_ptr(),
+                value.as_ptr(),
+                RRF_RT_REG_SZ | view,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut len,
+            )
+        };
+        if rc == 0 {
+            let n = (len as usize / 2).min(buf.len());
+            let s = String::from_utf16_lossy(&buf[..n]);
+            let s = s.trim_end_matches('\0').trim();
+            if !s.is_empty() && !out.iter().any(|p: &PathBuf| p.as_os_str() == s) {
+                out.push(PathBuf::from(s));
+            }
+        }
+    }
+    out
+}
+
+/// Git for Windows ships its own gpg (with an empty keyring of its own); it is never the one
+/// PGPM means.
+#[cfg(windows)]
+fn git_bundled(dir: &Path) -> bool {
+    let d = dir.to_string_lossy().to_lowercase().replace('/', "\\");
+    d.contains("\\git\\usr\\bin") || d.contains("\\git\\mingw64\\bin") || d.contains("\\git\\bin")
+}
+
 fn which(name: &str) -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&paths) {
+        #[cfg(windows)]
+        if git_bundled(&dir) {
+            continue;
+        }
         let p = dir.join(name);
         if is_exe(&p) {
             return Some(p);
@@ -146,11 +203,14 @@ pub fn run(args: &[&str], stdin: Option<&str>, timeout: Duration) -> Result<Outp
     let _ = writer.join();
     let out = ro.join().unwrap_or_default();
     let err = re.join().unwrap_or_default();
-    Ok(Output {
-        code: status.code(),
-        stdout: String::from_utf8_lossy(&out).into_owned(),
-        stderr: String::from_utf8_lossy(&err).into_owned(),
-    })
+    Ok(Output { code: status.code(), stdout: text(&out), stderr: text(&err) })
+}
+
+/// gpg's output as text. Windows' gpg ends lines with \r\n: read it the way the Tk app did
+/// (Python's text mode turns \r\n and \r into \n), so messages and keys match the Mac's.
+fn text(b: &[u8]) -> String {
+    let s = String::from_utf8_lossy(b).into_owned();
+    if cfg!(windows) { s.replace("\r\n", "\n").replace('\r', "\n") } else { s }
 }
 
 const T: Duration = Duration::from_secs(120);

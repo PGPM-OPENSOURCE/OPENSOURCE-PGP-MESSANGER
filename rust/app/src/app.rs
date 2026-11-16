@@ -605,6 +605,12 @@ impl eframe::App for App {
             self.menu_installed = true;
             crate::macos::install(&ctx);
         }
+        // Windows: the title bar drawn dark (also in light mode), like the Tk console look's
+        #[cfg(windows)]
+        if !self.menu_installed {
+            self.menu_installed = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark));
+        }
         #[cfg(target_os = "macos")]
         if crate::macos::take_about() {
             self.info(&format!("PGPM v{}", pgpm_core::APP_VERSION), &format!("https://github.com/{}", pgpm_core::GITHUB_REPO));

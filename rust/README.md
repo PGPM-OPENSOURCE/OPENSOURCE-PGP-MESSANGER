@@ -1,20 +1,38 @@
-# PGPM for macOS — written in Rust
+# PGPM for Windows and macOS — written in Rust
 
-The macOS version of PGPM: a native app written in Rust. It is the same app as the Python / Tk
-one (files/), in its console look, with GnuPG as the engine. It reads and writes the same settings
-(`~/.pgp_messenger/config.json`: active key, contact order, nicknames) and the same GnuPG
-keyring, so either version can be used on the same data.
+PGPM on Windows and macOS: one native app written in Rust, in its console look, with GnuPG as
+the engine. It keeps the settings the earlier Python version used (`~/.pgp_messenger/config.json`:
+active key, contact order, nicknames) and the GnuPG keyring, so an update keeps everything.
 
-- UI: [egui](https://github.com/emilk/egui) / eframe, drawn to match the Tk console look
+- UI: [egui](https://github.com/emilk/egui) / eframe in PGPM's console look
   (Cascadia Mono 16px on 19px lines, bracketed words, inverted selection)
-- Keys and messages: the `gpg` binary (GPG Suite / Homebrew), so PINs and passphrases are
-  asked by gpg's own pinentry and the keyring stays shared with `gpg` and other tools
+- Keys and messages: the `gpg` binary (GnuPG / Gpg4win on Windows, GPG Suite / Homebrew on
+  macOS), so PINs and passphrases are asked by gpg's own pinentry and the keyring stays shared
+  with `gpg` and other tools
 - Network: [ureq](https://github.com/algesten/ureq) for the update check and for checking a
-  smartcard's public-key URL
+  smartcard's public-key URL, over rustls with [RustCrypto](https://github.com/RustCrypto/rustls-rustcrypto)'s
+  pure-Rust algorithms and Mozilla's root certificates
+- Nothing in PGPM is compiled from C or assembly: every crate it builds is Rust (GnuPG is a
+  separate program it runs)
 - macOS: the menu bar (About PGPM, Edit, Window), a dark title bar, files dropped onto the
   message boxes
+- Windows: a dark title bar, files dropped onto the message boxes, one PGPM at a time (the
+  `PGPM_single_instance_mutex` the setup checks), GnuPG found on the PATH or where its
+  installer registered it (never Git's own gpg), the icon and version info in PGPM.exe, and the
+  C runtime linked in (`.cargo/config.toml`), so it needs no Visual C++ Redistributable
 
-## Build
+## Build on Windows
+
+From this folder (`rust/`), with Rust (stable) and the Microsoft C++ Build Tools (the linker):
+
+```sh
+cargo build -p pgpm --release        # target/release/pgpm.exe
+```
+
+The setup (`PGPM-Setup.exe`, with GnuPG bundled) is `installer/PGPM.iss` at the repository root,
+built with Inno Setup from `dist/PGPM.exe`; CI does all of it on each `vX.Y.Z` tag.
+
+## Build on macOS
 
 From this folder (`rust/`):
 
@@ -39,7 +57,7 @@ the app, choose **Open**, then **Open**. GnuPG is the only prerequisite
 | Path | What |
 | --- | --- |
 | `core/` | GnuPG (keyring listing, import / export / delete, generate, sign, encrypt, decrypt, smartcard commands), `~/.pgp_messenger` settings, the update check and key-URL check |
-| `app/` | the app: sidebar (`sidebar.rs`), panels (`panels.rs`, `card.rs`, `profile.rs`), dialogs (`dialog.rs`), the console toolkit (`ui.rs`), macOS integration (`macos.rs`) |
+| `app/` | the app: sidebar (`sidebar.rs`), panels (`panels.rs`, `card.rs`, `profile.rs`), dialogs (`dialog.rs`), the console toolkit (`ui.rs`), macOS integration (`macos.rs`), Windows integration (`win.rs`, `build.rs`) |
 | `scripts/` | packaging |
 | `installer/` | the setup package: its choices (`distribution.xml`), pages and install scripts |
 
@@ -50,8 +68,8 @@ cargo test --workspace                      # core: key listing, settings, versi
 cargo test -p pgpm-core -- --ignored        # online: GitHub release check, key-URL checks
 ```
 
-`pgpm --snap <scenario> --out <dir>` opens one screen in a known state (for comparing with
-the Tk app's screens); `pgpm --script <file> --out <dir>` drives the running app with
+`pgpm --snap <scenario> --out <dir>` opens one screen in a known state (for screenshots);
+`pgpm --script <file> --out <dir>` drives the running app with
 pointer, keyboard and file-drop input (see `app/src/script.rs`).
 
 ## License

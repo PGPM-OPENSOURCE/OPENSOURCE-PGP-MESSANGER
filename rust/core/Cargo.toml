@@ -9,9 +9,17 @@ publish.workspace = true
 [dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
 regex = "1"
 tempfile = "3"
+# The network (update check, a smartcard's key URL): rustls with RustCrypto's pure-Rust
+# algorithms instead of ring (C and assembly), and Mozilla's root certificates, so nothing in PGPM
+# is compiled from anything but Rust
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots", "gzip"] }
+rustls-rustcrypto = "0.1.0-pre.0"
+
+# Windows: GnuPG's install folder from the registry
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Registry"] }
 
 [dev-dependencies]
 serde_json = "1"
