@@ -1023,7 +1023,7 @@ RAD_WIN = 24  # corner diameter for the app window (≈12px radius, Win11-like)
 APP_W = 920
 APP_H = 540 if IS_WIN and not CONSOLE else 510   # 540 includes the 30px custom title bar
 
-APP_VERSION = "0.6.2"
+APP_VERSION = "0.6.3"
 GITHUB_REPO = "PGPM-OPENSOURCE/OPENSOURCE-PGP-MESSANGER"
 # the GnuPG distribution the app points users to
 GPG_DIST, GPG_URL = (("GPG Suite", "https://gpgtools.org") if IS_MAC else

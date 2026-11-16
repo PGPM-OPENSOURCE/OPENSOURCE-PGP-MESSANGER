@@ -1,0 +1,27 @@
+[package]
+name = "pgpm"
+description = "PGPM — OpenPGP keys and messages, as a native app written in Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pgpm"
+path = "src/main.rs"
+
+[dependencies]
+pgpm-core = { path = "../core" }
+eframe = "0.37"
+egui = "0.37"
+rfd = "0.18"
+image = { version = "0.25", default-features = false, features = ["png"] }
+unicode-linebreak = "0.1"
+serde_json = { version = "1", features = ["preserve_order"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# macOS: the app menu, the dark title bar, and the pointer position during a file drag
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"

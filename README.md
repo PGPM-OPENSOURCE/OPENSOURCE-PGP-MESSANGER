@@ -5,7 +5,8 @@
 A modern, dark-themed **Windows** desktop app for working with OpenPGP keys and messages — generate
 and manage keys, sign / encrypt, decrypt / verify, manage contacts' public keys, and use a hardware
 OpenPGP smartcard (Nitrokey / YubiKey). Built with Python + Tkinter; the GnuPG keyring is the source
-of truth (so it stays in sync with tools like Kleopatra / `gpg`).
+of truth (so it stays in sync with tools like Kleopatra / `gpg`). The **macOS** version is a native
+app written in **Rust** ([`rust/`](rust/)), with the same look and the same keyring and settings.
 
 ## Download & run
 
@@ -15,6 +16,7 @@ No installation needed — a single self-contained file you **double-click to op
 | Download | Run it |
 |----------|--------|
 | `PGPM.exe` | Double-click. First launch: Windows SmartScreen → *More info → Run anyway* (unsigned). |
+| `PGPM-macOS.dmg` | macOS, native app written in Rust. Open it and drag PGPM into Applications. First launch: right-click PGPM → *Open* (not signed by Apple). Needs [GPG Suite](https://gpgtools.org). |
 
 > ℹ️ **GnuPG is the only prerequisite** — install [Gpg4win](https://www.gpg4win.org) once, then the
 > app just runs. Without it the app still opens but key/crypto features are disabled.
@@ -43,6 +45,14 @@ pyinstaller --onefile --windowed --name PGPM --icon assets/icon.ico \
 ```
 Result: `dist/PGPM.exe`. (CI builds this automatically on each `vX.Y.Z` tag and attaches it to a
 Release.)
+
+## Build the macOS app (Rust)
+
+```bash
+cd rust
+scripts/package-macos.sh        # dist/PGPM.app and dist/PGPM-macOS.dmg
+```
+Requires Rust (stable). See [`rust/README.md`](rust/README.md).
 
 ## Notes
 - Private keys never leave your GnuPG keyring; the app's own data dir is `~/.pgp_messenger`.

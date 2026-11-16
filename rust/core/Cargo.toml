@@ -1,0 +1,17 @@
+[package]
+name = "pgpm-core"
+description = "PGPM without its UI: the GnuPG engine, keyring listing, settings and the network bits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+regex = "1"
+tempfile = "3"
+
+[dev-dependencies]
+serde_json = "1"
