@@ -20,8 +20,13 @@ From this folder (`rust/`):
 
 ```sh
 cargo build -p pgpm --release        # target/release/pgpm
-scripts/package-macos.sh             # dist/PGPM.app and dist/PGPM-macOS.dmg
+scripts/package-macos.sh             # dist/PGPM.app, dist/PGPM-macOS.dmg and dist/PGPM-Setup.pkg
 ```
+
+`PGPM-Setup.pkg` is the macOS counterpart of the Windows setup: it installs PGPM in Applications,
+with an optional desktop icon, and when the Mac has no GnuPG it downloads GPG Suite from
+gpgtools.org (a pinned release, checked against its SHA-256 and its signature) and opens its
+installer.
 
 The font (Cascadia Mono) and the icon come from the repository's `fonts/` and `assets/`.
 
@@ -36,6 +41,7 @@ the app, choose **Open**, then **Open**. GnuPG is the only prerequisite
 | `core/` | GnuPG (keyring listing, import / export / delete, generate, sign, encrypt, decrypt, smartcard commands), `~/.pgp_messenger` settings, the update check and key-URL check |
 | `app/` | the app: sidebar (`sidebar.rs`), panels (`panels.rs`, `card.rs`, `profile.rs`), dialogs (`dialog.rs`), the console toolkit (`ui.rs`), macOS integration (`macos.rs`) |
 | `scripts/` | packaging |
+| `installer/` | the setup package: its choices (`distribution.xml`), pages and install scripts |
 
 ## Tests
 

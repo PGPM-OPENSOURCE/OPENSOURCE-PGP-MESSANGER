@@ -1,0 +1,68 @@
+#!/bin/sh
+# GnuPG for PGPM (runs only when Setup found none): get GPG Suite from gpgtools.org, this
+# pinned release only, checked against its SHA-256 and its Apple signature, and open its
+# installer for the user. (One installer can't run another while it installs; GPG Suite's
+# opens in its own window and installs as soon as this one is done.)
+URL="https://releases.gpgtools.com/GPG_Suite-2023.3.dmg"
+SHA256="57468a4adc55d954ead4fe1f88b07eac1b70ada40fcbc810765fd521ef21eef1"
+SIGNER="Developer ID Installer: GPGTools GmbH (PKV8ZPD836)"
+
+user=$(stat -f%Su /dev/console)
+uid=$(stat -f%u /dev/console)
+
+# runs a command in the logged-in user's session
+as_user() {
+    if [ "$(id -u)" -ne 0 ] || [ "$uid" -eq 0 ]; then
+        "$@"
+    else
+        launchctl asuser "$uid" sudo -H -u "$user" "$@"
+    fi
+}
+
+# PGPM is installed either way: say what went wrong and offer the download page (opened
+# right away if the message can't be shown)
+tell_user() {
+    b=$(as_user osascript -e "button returned of (display dialog \"PGPM is installed, but $1\n\nPGPM needs GnuPG: install GPG Suite from gpgtools.org.\" with title \"PGPM\" buttons {\"OK\", \"Open gpgtools.org\"} default button 2 with icon caution)" 2>/dev/null) ||
+        b="Open gpgtools.org"
+    [ "$b" = "Open gpgtools.org" ] && as_user /usr/bin/open "https://gpgtools.org"
+    exit 0
+}
+
+# GnuPG may have arrived meanwhile (PGPM_SETUP_TEST: test as if there were none)
+if [ -z "$PGPM_SETUP_TEST" ]; then
+    for g in /usr/local/MacGPG2/bin/gpg /opt/homebrew/bin/gpg /usr/local/bin/gpg; do
+        [ -x "$g" ] && exit 0
+    done
+fi
+
+# a new folder that only Setup can write to; the user's session can read the download
+DIR="${PGPM_SETUP_DIR:-$(mktemp -d /private/tmp/PGPM-Setup.XXXXXX)}" ||
+    tell_user "GPG Suite could not be downloaded (no temporary folder)."
+chmod 755 "$DIR"
+DMG="$DIR/GPG_Suite-2023.3.dmg"
+curl -fsSL --retry 2 --connect-timeout 20 --max-time 900 -o "$DMG" "$URL" || {
+    rm -f "$DMG"
+    tell_user "GPG Suite could not be downloaded from gpgtools.org."
+}
+[ "$(shasum -a 256 "$DMG" | cut -d' ' -f1)" = "$SHA256" ] || {
+    rm -f "$DMG"
+    tell_user "the GPG Suite download did not match its expected checksum, so it was not opened."
+}
+chmod 644 "$DMG"
+
+# opened in the user's session, as if the download had been opened in Finder
+MNT=$(as_user hdiutil attach -readonly -noverify "$DMG" | awk -F'\t' '$NF ~ /^\/Volumes\// { print $NF }' | tail -n 1)
+[ -n "$MNT" ] && [ -f "$MNT/Install.pkg" ] ||
+    tell_user "the GPG Suite download could not be opened."
+# its installer must carry GPGTools' valid signature, and be notarized where this macOS's
+# pkgutil reports that
+sig=$(pkgutil --check-signature "$MNT/Install.pkg" 2>&1) || sig=""
+case "$sig" in *"$SIGNER"*) ;; *) sig="" ;; esac
+case "$sig" in *"Notarization:"*) case "$sig" in *"Notarization: trusted"*) ;; *) sig="" ;; esac ;; esac
+[ -n "$sig" ] || {
+    as_user hdiutil detach -quiet "$MNT" >/dev/null 2>&1
+    tell_user "the GPG Suite installer did not pass its signature check, so it was not opened."
+}
+
+as_user /usr/bin/open "$MNT/Install.pkg"
+exit 0

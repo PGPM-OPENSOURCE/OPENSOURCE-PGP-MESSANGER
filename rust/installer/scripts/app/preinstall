@@ -1,0 +1,9 @@
+#!/bin/sh
+# Before PGPM is installed (Setup has had the user close it, see distribution.xml): remove
+# the PGPM.app being replaced, since an older build can hold files the new one doesn't have
+# (e.g. the Python build's).
+APP="${PGPM_SETUP_APP:-/Applications/PGPM.app}"
+if [ -d "$APP" ] && [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" 2>/dev/null)" = "PGPM" ]; then
+    rm -rf "$APP"
+fi
+exit 0

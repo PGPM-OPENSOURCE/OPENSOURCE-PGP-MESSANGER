@@ -50,7 +50,7 @@ Release.)
 
 ```bash
 cd rust
-scripts/package-macos.sh        # dist/PGPM.app and dist/PGPM-macOS.dmg
+scripts/package-macos.sh        # dist/PGPM.app, dist/PGPM-macOS.dmg and dist/PGPM-Setup.pkg
 ```
 Requires Rust (stable). See [`rust/README.md`](rust/README.md).
 

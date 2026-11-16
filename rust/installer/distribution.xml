@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- PGPM setup for macOS (productbuild). Built by scripts/package-macos.sh, which fills in
+     @VERSION@. Like the Windows setup: PGPM, GnuPG when it's missing (required), and an
+     optional desktop icon. -->
+<installer-gui-script minSpecVersion="2">
+    <title>PGPM</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <options customize="always" require-scripts="false" rootVolumeOnly="true" hostArchitectures="x86_64"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="12.0"/>
+        </allowed-os-versions>
+    </volume-check>
+    <script>
+    // GnuPG where PGPM looks for it when started from Finder (GPG Suite, Homebrew)
+    function gnupgFound() {
+        var paths = ['/usr/local/MacGPG2/bin/gpg', '/opt/homebrew/bin/gpg', '/usr/local/bin/gpg'];
+        for (var i = 0; i &lt; paths.length; i++) {
+            if (system.files.fileExistsAtPath(paths[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+    </script>
+    <choices-outline>
+        <line choice="pgpm"/>
+        <line choice="gnupg"/>
+        <line choice="gnupg-found"/>
+        <line choice="desktop"/>
+    </choices-outline>
+    <choice id="pgpm" title="PGPM @VERSION@" description="PGPM, in your Applications folder." enabled="false" selected="true">
+        <pkg-ref id="PGPM"/>
+    </choice>
+    <choice id="gnupg" title="GnuPG: get GPG Suite 2023.3 (required)" description="PGPM uses GnuPG for all encryption and for hardware keys. Setup downloads GPG Suite from gpgtools.org (an internet connection is needed), checks the download, and opens its installer: finish it to use PGPM." visible="!gnupgFound()" enabled="false" selected="!gnupgFound()">
+        <pkg-ref id="PGPM.gnupg"/>
+    </choice>
+    <choice id="gnupg-found" title="GnuPG is already installed" description="PGPM will use the GnuPG that is already on this Mac." visible="gnupgFound()" enabled="false" selected="gnupgFound()"/>
+    <choice id="desktop" title="Create a desktop icon" description="A PGPM icon on your desktop." start_selected="false">
+        <pkg-ref id="PGPM.desktop"/>
+    </choice>
+    <pkg-ref id="PGPM" version="@VERSION@" onConclusion="none">PGPM.pkg</pkg-ref>
+    <!-- a running PGPM: Setup asks the user to close it first -->
+    <pkg-ref id="PGPM">
+        <must-close>
+            <app id="PGPM"/>
+        </must-close>
+    </pkg-ref>
+    <pkg-ref id="PGPM.gnupg" version="@VERSION@" onConclusion="none">GnuPG.pkg</pkg-ref>
+    <pkg-ref id="PGPM.desktop" version="@VERSION@" onConclusion="none">Desktop.pkg</pkg-ref>
+</installer-gui-script>

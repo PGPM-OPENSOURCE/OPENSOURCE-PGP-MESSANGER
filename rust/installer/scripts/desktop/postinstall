@@ -1,0 +1,17 @@
+#!/bin/sh
+# The optional desktop icon: a link to PGPM on the logged-in user's desktop.
+user=$(stat -f%Su /dev/console)
+[ "$user" = "root" ] && [ -z "$PGPM_SETUP_HOME" ] && exit 0
+home="${PGPM_SETUP_HOME:-$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')}"
+[ -d "$home/Desktop" ] || exit 0
+link="$home/Desktop/PGPM"
+# never replace a real file of the same name
+if [ -e "$link" ] && [ ! -L "$link" ]; then
+    exit 0
+fi
+if [ "$(id -u)" -eq 0 ]; then
+    sudo -u "$user" ln -sfh /Applications/PGPM.app "$link"
+else
+    ln -sfh /Applications/PGPM.app "$link"
+fi
+exit 0
